@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local secrets / config
+.env
+config/session.json
+config/supabase_config.json
+
+# Runtime uploads
+uploads/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

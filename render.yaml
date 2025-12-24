@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: flet-task-manager
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: FLET_FORCE_WEB_SERVER
+        value: "true"
+      - key: FLET_SERVER_IP
+        value: "0.0.0.0"
+      - key: FLET_SERVER_PORT
+        fromService:
+          type: web
+          name: flet-task-manager
+          property: port
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # your supabase env vars (set real values in Render dashboard too)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
