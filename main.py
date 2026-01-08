@@ -94,4 +94,4 @@ def main(page: ft.Page):
 
 
 os.environ.setdefault("FLET_SECRET_KEY", "any-long-random-string-here")
-ft.app(target=main, view=ft.WEB_BROWSER,upload_dir="uploads")
+ft.app(target=main, view=None,upload_dir="uploads")
