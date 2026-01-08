@@ -12,9 +12,10 @@ from app.db_client import (
     delete_task,
     update_task,
     set_task_subtasks,
-    set_task_assignee,
+    set_task_assignees,
     set_task_comments,
     set_task_pdf,
+    fetch_task
 )
 
 UPLOAD_DIR = "uploads"
@@ -43,7 +44,8 @@ class DashboardPage(ft.Container):
         if self.file_picker not in self.page.overlay:
             self.page.overlay.append(self.file_picker)
 
-        self._pending_pdf = None  # {"task_id":..., "filename":..., "storage_key":...}
+        self._pending_pdf = None
+        self._pending_subtask_pdf = None
 
         # Inputs
         self.title_f = ft.TextField(label="Task title", expand=True)
@@ -58,6 +60,11 @@ class DashboardPage(ft.Container):
         header = ft.Row(
             [
                 ft.Text(f"Welcome, {self.user.get('email','user')}", size=16, weight="bold", expand=True),
+                ft.IconButton(
+                    ft.Icons.TABLE_VIEW,
+                    tooltip="Table View",
+                    on_click=lambda e: self.page.go("/table"),
+                ),
                 self.refresh_btn,
                 self.logout_btn,
             ]
@@ -76,27 +83,11 @@ class DashboardPage(ft.Container):
         self.refresh()
 
     # ----------------- helpers -----------------
-
     def toast(self, msg: str):
-        try:
-            sb = ft.SnackBar(
-                content=ft.Text(msg),
-                open=True,
-            )
-
-            # Newer Flet: prefer page.open()
-            if hasattr(self.page, "open"):
-                self.page.open(sb)
-            else:
-                # Older Flet fallback
-                self.page.snack_bar = sb
-                self.page.update()
-
-            print("[TOAST]", msg)
-
-        except Exception as ex:
-            # If UI toast fails, at least log it
-            print("[TOAST-ERROR]", repr(ex), "MSG=", msg)
+        sb = ft.SnackBar(content=ft.Text(msg), open=True)
+        self.page.snack_bar = sb
+        self.page.update()
+        print("[TOAST]", msg)
 
     def _as_list(self, val):
         if val is None:
@@ -127,9 +118,6 @@ class DashboardPage(ft.Container):
         self.page.update()
 
     # ----------------- rendering -----------------
-
-    ft.ElevatedButton("Test toast", on_click=lambda e: self.toast("Hello!"))
-
     def refresh(self):
         self._load_users()
         self.tasks_view.controls.clear()
@@ -144,18 +132,17 @@ class DashboardPage(ft.Container):
     def _task_card(self, task: dict) -> ft.Control:
         status = (task.get("status") or "open").lower()
         pdf_url = task.get("pdf_url")
-        assignee_id = task.get("assignee")
-        assignee_label = self.users_map.get(assignee_id, "Unassigned") if assignee_id else "Unassigned"
+
+        assignees = self._as_list(task.get("assignees"))
+        assignee_labels = [self.users_map.get(uid, uid[:6]) for uid in assignees]
+        assignee_text = ", ".join(assignee_labels) if assignee_labels else "Unassigned"
 
         subtasks = self._as_list(task.get("subtasks"))
         comments = self._as_list(task.get("comments"))
 
         status_color = ft.Colors.GREEN if status == "closed" else ft.Colors.ORANGE
-
-        subs_ui = ft.Column(
-            [self._subtask_row(task, s) for s in subtasks],
-            spacing=4
-        ) if subtasks else ft.Text("No subtasks", size=12, color=ft.Colors.GREY)
+        subs_ui = ft.Column([self._subtask_row(task, s) for s in subtasks], spacing=4) \
+            if subtasks else ft.Text("No subtasks", size=12, color=ft.Colors.GREY)
 
         pdf_buttons = []
         if not pdf_url:
@@ -190,7 +177,7 @@ class DashboardPage(ft.Container):
                         ft.Row(
                             [
                                 ft.Text(f"Status: {status}", color=status_color),
-                                ft.Text(f"Assigned to: {assignee_label}", color=ft.Colors.BLUE_GREY, expand=True),
+                                ft.Text(f"Assigned to: {assignee_text}", color=ft.Colors.BLUE_GREY, expand=True),
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
@@ -213,8 +200,7 @@ class DashboardPage(ft.Container):
             )
         )
 
-    # ----------------- CRUD: tasks -----------------
-
+    # ----------------- CRUD -----------------
     def add_clicked(self, e):
         title = (self.title_f.value or "").strip()
         desc = (self.desc_f.value or "").strip()
@@ -283,21 +269,26 @@ class DashboardPage(ft.Container):
         self.page.update()
 
     # ----------------- subtasks -----------------
-
     def _subtask_row(self, task: dict, subtask: dict) -> ft.Control:
+        done = subtask.get("done", False)
+        pdf_url = subtask.get("pdf_url")
+
         return ft.Row(
             [
                 ft.Checkbox(
                     label=subtask.get("title", ""),
-                    value=bool(subtask.get("done", False)),
+                    value=done,
                     on_change=lambda e, t=task, s=subtask: self._toggle_subtask(t, s, e.control.value),
                 ),
-                ft.IconButton(
-                    ft.Icons.DELETE_FOREVER,
-                    tooltip="Delete subtask",
-                    icon_color=ft.Colors.RED,
-                    on_click=lambda e, t=task, sid=subtask.get("id"): self._delete_subtask(t, sid),
+                ft.Row(
+                    [
+                        ft.OutlinedButton("Attach PDF", on_click=lambda e, t=task, s=subtask: self._attach_subtask_pdf(t, s), visible=(pdf_url is None)),
+                        ft.OutlinedButton("Open PDF", on_click=lambda e, url=pdf_url: self.page.launch_url(url), visible=(pdf_url is not None)),
+                        ft.OutlinedButton("Remove PDF", on_click=lambda e, t=task, s=subtask: self._remove_subtask_pdf(t, s), style=ft.ButtonStyle(color=ft.Colors.RED), visible=(pdf_url is not None)),
+                    ],
+                    spacing=4
                 ),
+                ft.IconButton(ft.Icons.DELETE_FOREVER, tooltip="Delete subtask", icon_color=ft.Colors.RED, on_click=lambda e, t=task, sid=subtask.get("id"): self._delete_subtask(t, sid)),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
@@ -355,54 +346,55 @@ class DashboardPage(ft.Container):
             self.toast(f"❌ Failed: {ex}")
 
     # ----------------- assign -----------------
-
     def _assign_dialog(self, task: dict):
         if not self.users_map:
-            return self.toast("⚠️ No users found (profiles table empty)")
+            return self.toast("⚠️ No users found")
 
-        dd = ft.Dropdown(
-            label="Assign to",
-            options=[ft.dropdown.Option("", "Unassigned")]
-            + [ft.dropdown.Option(uid, label) for uid, label in self.users_map.items()],
-            value=task.get("assignee") or "",
-            width=360,
-        )
+        current_assignees = set(self._as_list(task.get("assignees")))
+        checkboxes = []
+        selected = set(current_assignees)
 
-        def save(e):
-            try:
-                assignee = dd.value or None
-                set_task_assignee(task["id"], assignee)
-                dlg.open = False
-                self.toast("✅ Assigned")
-                self.refresh()
-            except Exception as ex:
-                print("❌ assign:", repr(ex))
-                self.toast(f"❌ Assign failed: {ex}")
+        for uid, label in self.users_map.items():
+            cb = ft.Checkbox(label=label, value=(uid in current_assignees))
+            def on_change(e, uid=uid):
+                if e.control.value:
+                    selected.add(uid)
+                else:
+                    selected.discard(uid)
+            cb.on_change = on_change
+            checkboxes.append(cb)
 
         dlg = ft.AlertDialog(
             title=ft.Text("Assign Task"),
-            content=dd,
+            content=ft.Column(checkboxes, spacing=5),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(dlg)),
-                ft.ElevatedButton("Save", on_click=save),
+                ft.ElevatedButton("Save", on_click=lambda e: self._save_assignees(task["id"], selected, dlg)),
             ],
         )
         self.page.overlay.append(dlg)
         dlg.open = True
         self.page.update()
 
-    # ----------------- comments -----------------
+    def _save_assignees(self, task_id, selected_set, dlg):
+        try:
+            assignees = list(selected_set)
+            set_task_assignees(task_id, assignees)
+            dlg.open = False
+            self.toast("✅ Assigned")
+            self.refresh()
+        except Exception as ex:
+            print("❌ assign failed:", repr(ex))
+            self.toast(f"❌ Assign failed: {ex}")
 
+    # ----------------- comments -----------------
     def _comments_dialog(self, task: dict):
         comments = self._as_list(task.get("comments"))
         new_comment = ft.TextField(hint_text="Write a comment...", multiline=True)
 
         list_col = ft.Column(
             [
-                ft.Text(
-                    f"{c.get('author','')}: {c.get('text','')} ({c.get('timestamp','')})",
-                    size=12,
-                )
+                ft.Text(f"{c.get('author','')}: {c.get('text','')} ({c.get('timestamp','')})", size=12)
                 for c in comments
             ],
             spacing=6,
@@ -413,14 +405,12 @@ class DashboardPage(ft.Container):
             txt = (new_comment.value or "").strip()
             if not txt:
                 return
-            comments.append(
-                {
-                    "id": str(uuid.uuid4()),
-                    "author": self.user.get("email") or "user",
-                    "text": txt,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                }
-            )
+            comments.append({
+                "id": str(uuid.uuid4()),
+                "author": self.user.get("email") or "user",
+                "text": txt,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
             try:
                 set_task_comments(task["id"], comments)
                 dlg.open = False
@@ -442,79 +432,134 @@ class DashboardPage(ft.Container):
         dlg.open = True
         self.page.update()
 
+    def _upload_pdf_bytes(self, task_id: str, storage_key: str, data: bytes):
+        """
+        Uploads task PDF to Supabase Storage and closes task
+        """
+        try:
+            self.supabase.storage.from_(PDF_BUCKET).upload(
+                storage_key,
+                data,
+                {"content-type": "application/pdf"},
+            )
+
+            public_url = (
+                self.supabase.storage
+                .from_(PDF_BUCKET)
+                .get_public_url(storage_key)
+            )
+
+            set_task_pdf(task_id, public_url, "closed")
+            self.toast("✅ PDF attached")
+            self.refresh()
+
+        except Exception as ex:
+            print("❌ upload task pdf:", repr(ex))
+            self.toast(f"❌ Upload failed: {ex}")
+
+    def _upload_subtask_pdf_bytes(
+            self,
+            task_id: str,
+            subtask_id: str,
+            storage_key: str,
+            data: bytes,
+    ):
+        """
+        Uploads subtask PDF to Supabase Storage and updates subtask
+        """
+        try:
+            self.supabase.storage.from_(PDF_BUCKET).upload(
+                storage_key,
+                data,
+                {"content-type": "application/pdf"},
+            )
+
+            public_url = (
+                self.supabase.storage
+                .from_(PDF_BUCKET)
+                .get_public_url(storage_key)
+            )
+
+            task = fetch_task(task_id)
+            subs = self._as_list(task.get("subtasks"))
+
+            for s in subs:
+                if s.get("id") == subtask_id:
+                    s["pdf_url"] = public_url
+
+            set_task_subtasks(task_id, subs)
+            self.toast("✅ Subtask PDF attached")
+            self.refresh()
+
+        except Exception as ex:
+            print("❌ upload subtask pdf:", repr(ex))
+            self.toast(f"❌ Upload failed: {ex}")
+
     # ----------------- PDF attach/remove -----------------
+
+    def _delete_pdf_from_storage(self, pdf_url: str):
+        """
+        Deletes PDF file from Supabase Storage using public URL
+        """
+        try:
+            # Extract storage path from public URL
+            # Example:
+            # https://xyz.supabase.co/storage/v1/object/public/ssr-reports/taskid/file.pdf
+            marker = f"/{PDF_BUCKET}/"
+            if marker not in pdf_url:
+                return
+
+            storage_path = pdf_url.split(marker, 1)[1]
+
+            self.supabase.storage.from_(PDF_BUCKET).remove([storage_path])
+
+        except Exception as ex:
+            print("⚠️ storage delete failed:", repr(ex))
 
     def _attach_pdf(self, task: dict):
         self._pending_pdf = {"task_id": task["id"], "filename": None, "storage_key": None}
-        self.file_picker.pick_files(
-            allow_multiple=False,
-            file_type=ft.FilePickerFileType.CUSTOM,
-            allowed_extensions=["pdf"],
-        )
+        self.file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["pdf"])
 
     def _on_file_picked(self, e: ft.FilePickerResultEvent):
-        print("[PDF] on_file_picked:", e)
-
-
         if not e.files:
-            print("[PDF] No file selected.")
             return
-
-        if not self._pending_pdf:
-            print("[PDF] No pending pdf state.")
-            return
-
         f = e.files[0]
-        task_id = self._pending_pdf["task_id"]
-        storage_key = f"{task_id}/{uuid.uuid4().hex}.pdf"
 
-        self._pending_pdf.update({"filename": f.name, "storage_key": storage_key})
-
-        print("[PDF] picked name=", f.name, "path=", getattr(f, "path", None), "storage_key=", storage_key)
-
-        # Desktop: read directly
-        if getattr(f, "path", None):
-            try:
-                print("[PDF] Desktop path found, reading bytes:", f.path)
-                with open(f.path, "rb") as fp:
-                    data = fp.read()
-                print("[PDF] Read bytes:", len(data))
-                self._upload_pdf_bytes(task_id, storage_key, data)
-                self._pending_pdf = None
-            except Exception as ex:
-                print("[PDF] Desktop read/upload error:", repr(ex))
-                self.toast(f"❌ Cannot read PDF: {ex}")
+        if self._pending_pdf:
+            task_id = self._pending_pdf["task_id"]
+            storage_key = f"{task_id}/{uuid.uuid4().hex}.pdf"
+            self._pending_pdf.update({"filename": f.name, "storage_key": storage_key})
+            if getattr(f, "path", None):
+                try:
+                    with open(f.path, "rb") as fp:
+                        data = fp.read()
+                    self._upload_pdf_bytes(task_id, storage_key, data)
+                    self._pending_pdf = None
+                except Exception as ex:
+                    self.toast(f"❌ Cannot read PDF: {ex}")
             return
 
-        # Web: must upload to server first
-        try:
-            upload_url = self.page.get_upload_url(f.name, 600)
-            print("[PDF] Web upload_url:", upload_url)
-            self.file_picker.upload([ft.FilePickerUploadFile(f.name, upload_url)])
-            self.toast("⬆️ Uploading PDF...")
-        except Exception as ex:
-            print("[PDF] Web upload init error:", repr(ex))
-            self.toast(f"❌ Upload failed: {ex}")
+        if self._pending_subtask_pdf:
+            task_id = self._pending_subtask_pdf["task_id"]
+            subtask_id = self._pending_subtask_pdf["subtask_id"]
+            storage_key = f"{task_id}/subtask_{subtask_id}_{uuid.uuid4().hex}.pdf"
+            self._pending_subtask_pdf.update({"filename": f.name, "storage_key": storage_key})
+            if getattr(f, "path", None):
+                try:
+                    with open(f.path, "rb") as fp:
+                        data = fp.read()
+                    self._upload_subtask_pdf_bytes(task_id, subtask_id, storage_key, data)
+                    self._pending_subtask_pdf = None
+                except Exception as ex:
+                    self.toast(f"❌ Cannot read PDF: {ex}")
+            return
 
     def _on_file_upload(self, e: ft.FilePickerUploadEvent):
-        print(
-            "[PDF] on_file_upload:",
-            "file_name=", getattr(e, "file_name", None),
-            "progress=", getattr(e, "progress", None),
-            "error=", getattr(e, "error", None),
-        )
-
         if getattr(e, "error", None):
             self.toast(f"❌ Upload failed: {e.error}")
             return
 
         if not self._pending_pdf:
-            print("[PDF] No pending pdf; ignoring upload event.")
-            return
-
-        progress = getattr(e, "progress", None)
-        if progress is not None and progress < 1:
-            print("[PDF] Upload still in progress...")
             return
 
         task_id = self._pending_pdf["task_id"]
@@ -522,84 +567,60 @@ class DashboardPage(ft.Container):
         filename = getattr(e, "file_name", None) or self._pending_pdf.get("filename")
 
         local_path = os.path.join(UPLOAD_DIR, filename) if filename else None
-        print("[PDF] Finalizing. expecting local_path:", local_path)
-
         if not local_path or not os.path.exists(local_path):
-            try:
-                print("[PDF] uploads dir exists?", os.path.exists(UPLOAD_DIR))
-                print("[PDF] uploads dir contents:", os.listdir(UPLOAD_DIR))
-            except Exception as ex:
-                print("[PDF] Could not list uploads dir:", repr(ex))
-            self.toast("⚠️ Uploaded file not found locally. Did you set ft.app(upload_dir='uploads')?")
+            self.toast("⚠️ Uploaded file not found locally.")
             return
 
         try:
-            with open(local_path, "rb") as fp:
-                data = fp.read()
-            print("[PDF] Read bytes from uploads/:", len(data))
-
-            self._upload_pdf_bytes(task_id, storage_key, data)
-
-            try:
-                os.remove(local_path)
-                print("[PDF] Removed temp file:", local_path)
-            except Exception as ex:
-                print("[PDF] Temp delete failed:", repr(ex))
-
-            self._pending_pdf = None
-            print("[PDF] Done, cleared pending state.")
-
-        except Exception as ex:
-            print("[PDF] Finalize error:", repr(ex))
-            self.toast(f"❌ Upload finalize failed: {ex}")
-
-    def _upload_pdf_bytes(self, task_id: str, storage_key: str, data: bytes):
-        print("[PDF] Uploading to Supabase:", "bucket=", PDF_BUCKET, "key=", storage_key, "bytes=", len(data))
-
-        try:
-            res = self.supabase.storage.from_(PDF_BUCKET).upload(
-                path=storage_key,
-                file=data,
-                file_options={
-                    "content-type": "application/pdf",
-                    "upsert": "true",
-                },
-            )
-            print("[PDF] Supabase upload response:", res)
-
-            public_url = self.supabase.storage.from_(PDF_BUCKET).get_public_url(storage_key)
-            print("[PDF] public_url:", public_url)
-
-            set_task_pdf(task_id, public_url, "closed")
-            self.toast("✅ PDF attached — task closed")
+            set_task_pdf(task_id, f"/{storage_key}", "closed")
+            self.toast("✅ PDF attached")
             self.refresh()
-
         except Exception as ex:
-            print("[PDF] Supabase upload failed:", repr(ex))
-            self.toast(f"❌ Storage upload failed: {ex}")
+            print("❌ attach pdf:", repr(ex))
+            self.toast(f"❌ Failed: {ex}")
+
+    def _attach_subtask_pdf(self, task: dict, subtask: dict):
+        self._pending_subtask_pdf = {"task_id": task["id"], "subtask_id": subtask["id"]}
+        self.file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["pdf"])
 
     def _remove_pdf(self, task: dict):
         pdf_url = task.get("pdf_url")
-        if not pdf_url:
-            return
-
-        key = None
-        marker = f"/{PDF_BUCKET}/"
-        if marker in pdf_url:
-            key = pdf_url.split(marker, 1)[1]
 
         try:
-            if key:
-                self.supabase.storage.from_(PDF_BUCKET).remove([key])
+            if pdf_url:
+                self._delete_pdf_from_storage(pdf_url)
+
             set_task_pdf(task["id"], None, "open")
-            self.toast("🗑️ PDF removed — task reopened")
+            self.toast("✅ PDF removed")
             self.refresh()
+
         except Exception as ex:
-            print("❌ remove pdf failed:", repr(ex))
-            self.toast(f"❌ Remove failed: {ex}")
+            print("❌ remove pdf:", repr(ex))
+            self.toast(f"❌ Failed: {ex}")
+
+    def _remove_subtask_pdf(self, task: dict, subtask: dict):
+        subs = self._as_list(task.get("subtasks"))
+
+        for s in subs:
+            if s.get("id") == subtask.get("id"):
+                if s.get("pdf_url"):
+                    self._delete_pdf_from_storage(s["pdf_url"])
+                s["pdf_url"] = None
+
+        try:
+            set_task_subtasks(task["id"], subs)
+            self.toast("✅ Subtask PDF removed")
+            self.refresh()
+
+        except Exception as ex:
+            print("❌ remove subtask pdf:", repr(ex))
+            self.toast(f"❌ Failed: {ex}")
 
     # ----------------- logout -----------------
-
     def logout(self, e):
-        sign_out()
-        self.on_logout()
+        try:
+            sign_out()
+            self.on_logout()
+        except Exception as ex:
+            print("❌ logout:", repr(ex))
+            self.toast("❌ Logout failed")

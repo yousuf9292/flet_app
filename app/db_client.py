@@ -7,6 +7,20 @@ def utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+# ----------------- MULTI ASSIGNEES -----------------
+
+def set_task_assignees(task_id: str, assignees: list[str]) -> bool:
+    supabase = get_supabase()
+    return (
+        supabase.table("tasks")
+        .update({"assignees": assignees, "updated_at": utc_now_iso()})
+        .eq("id", task_id)
+        .execute()
+    )
+
+
+# ----------------- TASK CRUD -----------------
+
 def add_task(title: str, description: str = "") -> bool:
     supabase = get_supabase()
     user = get_current_user()
@@ -20,11 +34,12 @@ def add_task(title: str, description: str = "") -> bool:
         "description": description,
         "status": "open",
         "pdf_url": None,
-        "assignee": None,
+        "assignees": [],
         "subtasks": [],
         "comments": [],
         "updated_at": utc_now_iso(),
     }
+
     supabase.table("tasks").insert(payload).execute()
     return True
 
@@ -37,9 +52,12 @@ def update_task(task_id: str, patch: dict) -> bool:
 
     patch = dict(patch)
     patch["updated_at"] = utc_now_iso()
+
     supabase.table("tasks").update(patch).eq("id", task_id).execute()
     return True
 
+
+import json
 
 def fetch_tasks_for_user():
     supabase = get_supabase()
@@ -47,14 +65,37 @@ def fetch_tasks_for_user():
     if not user:
         return []
 
-    res = (
-        supabase.table("tasks")
-        .select("*")
-        .or_(f"owner.eq.{user['id']},assignee.eq.{user['id']}")
-        .order("updated_at", desc=True)
-        .execute()
-    )
-    return res.data or []
+    uid = user["id"]
+
+    try:
+        owned_res = (
+            supabase.table("tasks")
+            .select("*")
+            .eq("owner", uid)
+            .execute()
+        )
+        owned_tasks = owned_res.data or []
+
+        assigned_res = (
+            supabase.table("tasks")
+            .select("*")
+            .contains("assignees", json.dumps([uid]))
+            .execute()
+        )
+        assigned_tasks = assigned_res.data or []
+
+        return list({t["id"]: t for t in owned_tasks + assigned_tasks}.values())
+
+    except Exception as e:
+        print(f"[DEBUG] fetch_tasks_for_user error: {repr(e)}")
+        return []
+
+
+
+def fetch_task(task_id: str):
+    supabase = get_supabase()
+    res = supabase.table("tasks").select("*").eq("id", task_id).single().execute()
+    return res.data if res.data else {}
 
 
 def delete_task(task_id: str) -> bool:
@@ -63,8 +104,11 @@ def delete_task(task_id: str) -> bool:
     return True
 
 
+# ----------------- BACKWARD COMPAT (optional) -----------------
+
 def set_task_assignee(task_id: str, assignee_id: str | None) -> bool:
-    return update_task(task_id, {"assignee": assignee_id})
+    assignees = [assignee_id] if assignee_id else []
+    return set_task_assignees(task_id, assignees)
 
 
 def set_task_subtasks(task_id: str, subtasks: list) -> bool:
