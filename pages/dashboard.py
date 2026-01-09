@@ -1,10 +1,10 @@
 import os
 import uuid
 import json
-from datetime import datetime, timezone
+from datetime import datetime
+from io import BytesIO
 
 import flet as ft
-
 from app.auth import get_current_user, sign_out, get_supabase
 from app.db_client import (
     add_task,
@@ -15,7 +15,7 @@ from app.db_client import (
     set_task_assignees,
     set_task_comments,
     set_task_pdf,
-    fetch_task
+    fetch_task,
 )
 
 UPLOAD_DIR = "uploads"
@@ -34,18 +34,23 @@ class DashboardPage(ft.Container):
         self.supabase = get_supabase()
         self.user = get_current_user() or {}
 
-        # Users for assignment
+        # Users map
         self.users_map = {}
         self._load_users()
 
-        # File picker (PDF)
+        # File picker for PDF
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        self.file_picker = ft.FilePicker(on_result=self._on_file_picked, on_upload=self._on_file_upload)
+        self.file_picker = ft.FilePicker(
+            on_result=self._on_file_picked,
+            on_upload=self._on_file_upload,
+        )
         if self.file_picker not in self.page.overlay:
             self.page.overlay.append(self.file_picker)
 
+        # Pending upload state
         self._pending_pdf = None
-        self._pending_subtask_pdf = None
+        self._pending_subtask_pdf=None
+        # {"task_id":..., "subtask_id":..., "filename":..., "storage_key":...}
 
         # Inputs
         self.title_f = ft.TextField(label="Task title", expand=True)
@@ -432,195 +437,170 @@ class DashboardPage(ft.Container):
         dlg.open = True
         self.page.update()
 
-    def _upload_pdf_bytes(self, task_id: str, storage_key: str, data: bytes):
-        """
-        Uploads task PDF to Supabase Storage and closes task
-        """
-        try:
-            self.supabase.storage.from_(PDF_BUCKET).upload(
-                storage_key,
-                data,
-                {"content-type": "application/pdf"},
-            )
-
-            public_url = (
-                self.supabase.storage
-                .from_(PDF_BUCKET)
-                .get_public_url(storage_key)
-            )
-
-            set_task_pdf(task_id, public_url, "closed")
-            self.toast("✅ PDF attached")
-            self.refresh()
-
-        except Exception as ex:
-            print("❌ upload task pdf:", repr(ex))
-            self.toast(f"❌ Upload failed: {ex}")
-
-    def _upload_subtask_pdf_bytes(
-            self,
-            task_id: str,
-            subtask_id: str,
-            storage_key: str,
-            data: bytes,
-    ):
-        """
-        Uploads subtask PDF to Supabase Storage and updates subtask
-        """
-        try:
-            self.supabase.storage.from_(PDF_BUCKET).upload(
-                storage_key,
-                data,
-                {"content-type": "application/pdf"},
-            )
-
-            public_url = (
-                self.supabase.storage
-                .from_(PDF_BUCKET)
-                .get_public_url(storage_key)
-            )
-
-            task = fetch_task(task_id)
-            subs = self._as_list(task.get("subtasks"))
-
-            for s in subs:
-                if s.get("id") == subtask_id:
-                    s["pdf_url"] = public_url
-
-            set_task_subtasks(task_id, subs)
-            self.toast("✅ Subtask PDF attached")
-            self.refresh()
-
-        except Exception as ex:
-            print("❌ upload subtask pdf:", repr(ex))
-            self.toast(f"❌ Upload failed: {ex}")
-
-    # ----------------- PDF attach/remove -----------------
-
+    # ----------------- PDF Attach -----------------
     def _delete_pdf_from_storage(self, pdf_url: str):
-        """
-        Deletes PDF file from Supabase Storage using public URL
-        """
         try:
-            # Extract storage path from public URL
-            # Example:
-            # https://xyz.supabase.co/storage/v1/object/public/ssr-reports/taskid/file.pdf
             marker = f"/{PDF_BUCKET}/"
             if marker not in pdf_url:
                 return
-
             storage_path = pdf_url.split(marker, 1)[1]
-
             self.supabase.storage.from_(PDF_BUCKET).remove([storage_path])
-
         except Exception as ex:
             print("⚠️ storage delete failed:", repr(ex))
 
     def _attach_pdf(self, task: dict):
-        self._pending_pdf = {"task_id": task["id"], "filename": None, "storage_key": None}
-        self.file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["pdf"])
+        self._pending_pdf = {"task_id": task["id"], "subtask_id": None}
+        self.file_picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["pdf"],
+        )
+
+    def _attach_subtask_pdf(self, task: dict, subtask: dict):
+        self._pending_pdf = {"task_id": task["id"], "subtask_id": subtask["id"]}
+        self.file_picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["pdf"],
+        )
 
     def _on_file_picked(self, e: ft.FilePickerResultEvent):
-        if not e.files:
+        if not e.files or not self._pending_pdf:
             return
+
         f = e.files[0]
+        task_id = self._pending_pdf["task_id"]
+        subtask_id = self._pending_pdf["subtask_id"]
 
-        if self._pending_pdf:
-            task_id = self._pending_pdf["task_id"]
-            storage_key = f"{task_id}/{uuid.uuid4().hex}.pdf"
-            self._pending_pdf.update({"filename": f.name, "storage_key": storage_key})
-            if getattr(f, "path", None):
-                try:
-                    with open(f.path, "rb") as fp:
-                        data = fp.read()
-                    self._upload_pdf_bytes(task_id, storage_key, data)
-                    self._pending_pdf = None
-                except Exception as ex:
-                    self.toast(f"❌ Cannot read PDF: {ex}")
-            return
+        storage_key = (
+            f"{task_id}/subtask_{subtask_id}_{uuid.uuid4().hex}.pdf"
+            if subtask_id
+            else f"{task_id}/{uuid.uuid4().hex}.pdf"
+        )
 
-        if self._pending_subtask_pdf:
-            task_id = self._pending_subtask_pdf["task_id"]
-            subtask_id = self._pending_subtask_pdf["subtask_id"]
-            storage_key = f"{task_id}/subtask_{subtask_id}_{uuid.uuid4().hex}.pdf"
-            self._pending_subtask_pdf.update({"filename": f.name, "storage_key": storage_key})
-            if getattr(f, "path", None):
-                try:
-                    with open(f.path, "rb") as fp:
-                        data = fp.read()
+        # ✅ DESKTOP
+        if getattr(f, "path", None):
+            try:
+                with open(f.path, "rb") as fp:
+                    data = fp.read()
+
+                if subtask_id:
                     self._upload_subtask_pdf_bytes(task_id, subtask_id, storage_key, data)
-                    self._pending_subtask_pdf = None
-                except Exception as ex:
-                    self.toast(f"❌ Cannot read PDF: {ex}")
-            return
+                else:
+                    self._upload_pdf_bytes(task_id, storage_key, data)
+
+                self._pending_pdf = None
+                return
+
+            except Exception as ex:
+                self.toast(f"❌ Cannot read PDF: {ex}")
+                return
+
+        # ✅ WEB (upload to server first)
+        try:
+            upload_url = self.page.get_upload_url(f.name, 600)
+            self.file_picker.upload(
+                [ft.FilePickerUploadFile(f.name, upload_url)]
+            )
+            self.toast("⬆️ Uploading PDF...")
+        except Exception as ex:
+            self.toast(f"❌ Upload init failed: {ex}")
 
     def _on_file_upload(self, e: ft.FilePickerUploadEvent):
-        if getattr(e, "error", None):
-            self.toast(f"❌ Upload failed: {e.error}")
+        if e.error or not self._pending_pdf:
             return
 
-        if not self._pending_pdf:
+        if e.progress is not None and e.progress < 1:
+            return
+
+        filename = e.file_name
+        local_path = os.path.join(UPLOAD_DIR, filename)
+
+        if not os.path.exists(local_path):
+            self.toast("⚠️ Uploaded file not found locally")
             return
 
         task_id = self._pending_pdf["task_id"]
-        storage_key = self._pending_pdf["storage_key"]
-        filename = getattr(e, "file_name", None) or self._pending_pdf.get("filename")
-
-        local_path = os.path.join(UPLOAD_DIR, filename) if filename else None
-        if not local_path or not os.path.exists(local_path):
-            self.toast("⚠️ Uploaded file not found locally.")
-            return
+        subtask_id = self._pending_pdf["subtask_id"]
 
         try:
-            set_task_pdf(task_id, f"/{storage_key}", "closed")
-            self.toast("✅ PDF attached")
+            with open(local_path, "rb") as fp:
+                data = fp.read()
+
+            storage_key = (
+                f"{task_id}/subtask_{subtask_id}_{uuid.uuid4().hex}.pdf"
+                if subtask_id
+                else f"{task_id}/{uuid.uuid4().hex}.pdf"
+            )
+
+            if subtask_id:
+                self._upload_subtask_pdf_bytes(task_id, subtask_id, storage_key, data)
+            else:
+                self._upload_pdf_bytes(task_id, storage_key, data)
+
+            os.remove(local_path)
+            self._pending_pdf = None
+
+        except Exception as ex:
+            self.toast(f"❌ Upload finalize failed: {ex}")
+
+    def _upload_pdf_bytes(self, task_id: str, storage_key: str, data: bytes):
+        try:
+            self.supabase.storage.from_(PDF_BUCKET).upload(
+                storage_key,
+                data,
+                {"content-type": "application/pdf"}
+            )
+            url = self.supabase.storage.from_(PDF_BUCKET).get_public_url(storage_key)
+            set_task_pdf(task_id, url, "closed")
+            self.toast("✅ PDF uploaded, task closed")
             self.refresh()
         except Exception as ex:
-            print("❌ attach pdf:", repr(ex))
-            self.toast(f"❌ Failed: {ex}")
+            print("❌ upload pdf:", repr(ex))
+            self.toast(f"❌ PDF upload failed: {ex}")
 
-    def _attach_subtask_pdf(self, task: dict, subtask: dict):
-        self._pending_subtask_pdf = {"task_id": task["id"], "subtask_id": subtask["id"]}
-        self.file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["pdf"])
+    def _upload_subtask_pdf_bytes(self, task_id: str, subtask_id: str, storage_key: str, data: bytes):
+        try:
+            self.supabase.storage.from_(PDF_BUCKET).upload(
+                storage_key,
+                data,
+                {"content-type": "application/pdf"}
+            )
+            url = self.supabase.storage.from_(PDF_BUCKET).get_public_url(storage_key)
+
+            task = fetch_task(task_id)
+            subs = self._as_list(task.get("subtasks"))
+            for s in subs:
+                if s.get("id") == subtask_id:
+                    s["pdf_url"] = url
+            set_task_subtasks(task_id, subs)
+            self.toast("✅ Subtask PDF uploaded")
+            self.refresh()
+        except Exception as ex:
+            print("❌ upload subtask pdf:", repr(ex))
+            self.toast(f"❌ PDF upload failed: {ex}")
 
     def _remove_pdf(self, task: dict):
         pdf_url = task.get("pdf_url")
-
-        try:
-            if pdf_url:
-                self._delete_pdf_from_storage(pdf_url)
-
+        if pdf_url:
+            self._delete_pdf_from_storage(pdf_url)
             set_task_pdf(task["id"], None, "open")
-            self.toast("✅ PDF removed")
+            self.toast("❌ PDF removed, task reopened")
             self.refresh()
-
-        except Exception as ex:
-            print("❌ remove pdf:", repr(ex))
-            self.toast(f"❌ Failed: {ex}")
 
     def _remove_subtask_pdf(self, task: dict, subtask: dict):
-        subs = self._as_list(task.get("subtasks"))
-
-        for s in subs:
-            if s.get("id") == subtask.get("id"):
-                if s.get("pdf_url"):
-                    self._delete_pdf_from_storage(s["pdf_url"])
-                s["pdf_url"] = None
-
-        try:
+        pdf_url = subtask.get("pdf_url")
+        if pdf_url:
+            self._delete_pdf_from_storage(pdf_url)
+            subs = self._as_list(task.get("subtasks"))
+            for s in subs:
+                if s.get("id") == subtask.get("id"):
+                    s["pdf_url"] = None
             set_task_subtasks(task["id"], subs)
-            self.toast("✅ Subtask PDF removed")
+            self.toast("❌ Subtask PDF removed")
             self.refresh()
 
-        except Exception as ex:
-            print("❌ remove subtask pdf:", repr(ex))
-            self.toast(f"❌ Failed: {ex}")
-
     # ----------------- logout -----------------
-    def logout(self, e):
-        try:
-            sign_out()
-            self.on_logout()
-        except Exception as ex:
-            print("❌ logout:", repr(ex))
-            self.toast("❌ Logout failed")
+    def logout(self, e=None):
+        sign_out()
+        self.on_logout()
