@@ -361,26 +361,41 @@ class DashboardPage(ft.Container):
         self.file_picker.pick_files(allowed_extensions=["pdf"])
 
     def _on_file_picked(self, e: ft.FilePickerResultEvent):
-        if not e.files or not self._pending_pdf: return
+        if not e.files or not self._pending_pdf:
+            return
+
         f = e.files[0]
         tid, sid = self._pending_pdf["task_id"], self._pending_pdf["subtask_id"]
-        key = f"{tid}/{'sub_' + sid if sid else 'main'}_{uuid.uuid4().hex}.pdf"
 
-        # Simple cross-platform byte upload
         if getattr(f, "path", None):  # Desktop
             with open(f.path, "rb") as fp:
+                key = f"{tid}/{'sub_' + sid if sid else 'main'}_{uuid.uuid4().hex}.pdf"
                 self._upload_wrapper(tid, sid, key, fp.read())
-        else:  # Web
-            self.file_picker.upload([ft.FilePickerUploadFile(f.name, self.page.get_upload_url(f.name, 600))])
+        else:  # Web / Mobile
+            self.file_picker.upload([
+                ft.FilePickerUploadFile(
+                    f.name,
+                    self.page.get_upload_url(f.name),
+                )
+            ])
 
     def _on_file_upload(self, e: ft.FilePickerUploadEvent):
-        if e.error or (e.progress and e.progress < 1): return
-        local_path = os.path.join(UPLOAD_DIR, e.file_name)
-        if os.path.exists(local_path):
-            with open(local_path, "rb") as fp:
-                tid, sid = self._pending_pdf["task_id"], self._pending_pdf["subtask_id"]
-                self._upload_wrapper(tid, sid, f"{tid}/{uuid.uuid4().hex}.pdf", fp.read())
-            os.remove(local_path)
+        if e.error:
+            self.toast("Upload failed")
+            return
+
+        if e.progress == 1 and e.file_content:
+            tid = self._pending_pdf["task_id"]
+            sid = self._pending_pdf["subtask_id"]
+
+            key = f"{tid}/{'sub_' + sid if sid else 'main'}_{uuid.uuid4().hex}.pdf"
+
+            self._upload_wrapper(
+                tid,
+                sid,
+                key,
+                e.file_content,  # ✅ THIS IS THE FIX
+            )
 
     def _upload_wrapper(self, tid, sid, key, data):
         self.supabase.storage.from_(PDF_BUCKET).upload(key, data, {"content-type": "application/pdf"})
