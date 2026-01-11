@@ -375,7 +375,7 @@ class DashboardPage(ft.Container):
             self.file_picker.upload([
                 ft.FilePickerUploadFile(
                     f.name,
-                    self.page.get_upload_url(f.name),
+                    self.page.get_upload_url(f.name,600),
                 )
             ])
 
