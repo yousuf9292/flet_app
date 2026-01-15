@@ -1,3 +1,4 @@
+# main.py
 print("Starting main.py...")
 import flet as ft
 from app.auth import restore_session_if_any, get_current_user
@@ -15,8 +16,6 @@ load_dotenv()
 def main(page: ft.Page):
     page.title = "Task Manager"
     page.theme_mode = ft.ThemeMode.LIGHT
-
-    # Enable adaptive design features
     page.padding = 0
     page.spacing = 0
 
@@ -25,10 +24,6 @@ def main(page: ft.Page):
 
     def on_route_change(e: ft.RouteChangeEvent):
         page.views.clear()
-
-        # Responsive View Configuration
-        # We use scroll=ft.ScrollMode.AUTO to ensure mobile users can scroll
-        # if the keyboard or small screen clips the content.
 
         # -------- SIGNUP --------
         if page.route == "/signup":
@@ -93,7 +88,6 @@ def main(page: ft.Page):
                         )
                     ],
                     padding=0,
-                    # Center login content on large screens
                     vertical_alignment=ft.MainAxisAlignment.CENTER,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 )
@@ -101,10 +95,13 @@ def main(page: ft.Page):
 
         page.update()
 
-    # global resize handler (Optional: broadcast resize to the active view)
+    # global resize handler (safe refresh)
     def on_page_resize(e):
-        # This forces a UI refresh across the app when the window
-        # transitions between mobile/desktop widths.
+        if page.views:
+            v = page.views[-1]
+            for c in v.controls:
+                if hasattr(c, "refresh_table") and getattr(c, "_mounted", False):
+                    c.refresh_table()
         page.update()
 
     page.on_route_change = on_route_change
@@ -117,13 +114,10 @@ def main(page: ft.Page):
         page.go("/login")
 
 
-# Security and Upload Config
 os.environ.setdefault("FLET_SECRET_KEY", "any-long-random-string-here")
 
-# Run the app
 ft.app(
     target=main,
     upload_dir="uploads",
-    # Assets dir allows for custom icons/images if needed later
-    assets_dir="assets"
+    assets_dir="assets",
 )
