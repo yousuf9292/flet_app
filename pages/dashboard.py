@@ -419,16 +419,48 @@ class DashboardPage(ft.Container):
             set_task_pdf(tid, url, "closed")
         self.refresh()
 
+    def _get_storage_path_from_url(self, url: str):
+        """Extracts the 'folder/file.pdf' part from a Supabase public URL."""
+        try:
+            # Splits the URL and takes everything after the bucket name
+            parts = url.split(f"{PDF_BUCKET}/")
+            if len(parts) > 1:
+                return parts[1]
+        except:
+            return None
+
     def _remove_pdf(self, task):
-        update_task(task["id"], {"pdf_url": None});
-        self.refresh()
+        url = task.get("pdf_url")
+        if url:
+            # 1. Delete from Storage
+            path = self._get_storage_path_from_url(url)
+            if path:
+                self.supabase.storage.from_(PDF_BUCKET).remove([path])
+
+            # 2. Clear from Database
+            self.supabase.table("tasks").update({"pdf_url": None}).eq("id", task["id"]).execute()
+
+            self.toast("🗑️ File and Link Deleted")
+            self.refresh()
 
     def _remove_subtask_pdf(self, task, subtask):
-        subs = self._as_list(task.get("subtasks"))
-        for s in subs:
-            if s["id"] == subtask["id"]: s["pdf_url"] = None
-        set_task_subtasks(task["id"], subs);
-        self.refresh()
+        url = subtask.get("pdf_url")
+        if url:
+            # 1. Delete from Storage
+            path = self._get_storage_path_from_url(url)
+            if path:
+                self.supabase.storage.from_(PDF_BUCKET).remove([path])
+
+            # 2. Update the JSON array in Database
+            latest_task = fetch_task(task["id"])
+            subs = self._as_list(latest_task.get("subtasks"))
+            for s in subs:
+                if s["id"] == subtask["id"]:
+                    s["pdf_url"] = None
+
+            set_task_subtasks(task["id"], subs)
+            self.toast("🗑️ Subtask PDF Deleted")
+            self.refresh()
 
     def logout(self, e=None):
         sign_out();
