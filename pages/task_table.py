@@ -1,9 +1,10 @@
 import json
 import pandas as pd
-import io
 import flet as ft
+import asyncio
+
 from app.auth import get_current_user, get_supabase
-from app.db_client import fetch_tasks_for_user
+from app.db_client import fetch_tasks_for_user, update_task, set_task_subtasks
 
 
 class TaskTablePage(ft.Container):
@@ -11,6 +12,8 @@ class TaskTablePage(ft.Container):
         super().__init__()
         self.page = page
         self.on_back = on_back
+
+        # Layout Properties
         self.expand = True
         self.padding = 16
         self.bgcolor = ft.Colors.BLUE_GREY_50
@@ -18,18 +21,21 @@ class TaskTablePage(ft.Container):
         self.supabase = get_supabase()
         self.user = get_current_user() or {}
 
-        # Responsive State
-        self.is_mobile = self.page.width < 700
-
         self.users_map = {}
         self._load_users()
 
-        # ---------- stats controls ----------
-        self.total_txt = ft.Text("0")
-        self.open_txt = ft.Text("0")
-        self.closed_txt = ft.Text("0")
+        self._mounted = False
 
-        # ---------- filter controls ----------
+        # Initial Responsive Check
+        current_width = self.page.width if self.page.width else 1000
+        self.is_mobile = current_width < 800
+
+        # ---------- Stats Elements ----------
+        self.total_txt = ft.Text("0", color=ft.Colors.WHITE, size=22, weight="bold")
+        self.open_txt = ft.Text("0", color=ft.Colors.WHITE, size=22, weight="bold")
+        self.closed_txt = ft.Text("0", color=ft.Colors.WHITE, size=22, weight="bold")
+
+        # ---------- Filter Elements ----------
         self.status_filter = ft.Dropdown(
             label="Status",
             options=[
@@ -38,18 +44,17 @@ class TaskTablePage(ft.Container):
                 ft.dropdown.Option("closed"),
             ],
             value="All",
-            expand=1 if self.is_mobile else False,
-            width=None if self.is_mobile else 160,
+            width=160,
             on_change=lambda e: self.refresh_table(),
         )
 
         self.task_filter = ft.TextField(
-            label="Search task / subtask",
-            expand=2,
+            label="Search task or subtask...",
+            expand=True,
             on_change=lambda e: self.refresh_table(),
         )
 
-        # ---------- table ----------
+        # ---------- Table Component ----------
         self.table = ft.DataTable(
             column_spacing=20,
             heading_row_color=ft.Colors.GREY_100,
@@ -61,94 +66,105 @@ class TaskTablePage(ft.Container):
                 ft.DataColumn(ft.Text("Progress", weight="bold")),
                 ft.DataColumn(ft.Text("File", weight="bold")),
             ],
+            rows=[],
         )
 
-        # Main Column to hold all responsive parts
-        self.main_content = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
-        self.content = self.main_content
+        # ---------- Mobile List Component ----------
+        self.mobile_list = ft.ListView(spacing=10, padding=0, expand=True)
 
-        # Listen for window resize to toggle layout
-        self.page.on_resize = self._on_resize
+        # ---------- Responsive Containers ----------
+        self.desktop_table_area = ft.Column(
+            expand=True,
+            scroll=ft.ScrollMode.ADAPTIVE,
+            controls=[
+                ft.Row([self.table], scroll=ft.ScrollMode.ALWAYS)
+            ],
+            visible=not self.is_mobile
+        )
 
+        self.mobile_list_area = ft.Column(
+            expand=True,
+            controls=[self.mobile_list],
+            visible=self.is_mobile
+        )
+
+        # ---------- Main Page Body ----------
+        self.body = ft.Column(expand=True, spacing=15)
+        self.content = self.body
+
+        self._build_layout()
+
+    def did_mount(self):
+        self._mounted = True
+        # Force a check of window dimensions on mount
+        self._sync_responsive()
         self.refresh_table()
 
-    def _on_resize(self, e):
-        new_mobile_state = self.page.width < 700
-        if new_mobile_state != self.is_mobile:
-            self.is_mobile = new_mobile_state
-            # Update UI components that depend on width
-            self.status_filter.expand = 1 if self.is_mobile else False
-            self.status_filter.width = None if self.is_mobile else 160
-            self.refresh_table()
+    def _sync_responsive(self):
+        w = self.page.width if self.page.width else 1000
+        self.is_mobile = w < 800
+        self.desktop_table_area.visible = not self.is_mobile
+        self.mobile_list_area.visible = self.is_mobile
+        self.update()
 
-    def _build_header(self):
-        # Stacks title and buttons on mobile
-        title_row = ft.Row(
-            [
+    def _build_layout(self):
+        self.body.controls = [
+            # Header
+            ft.Row([
                 ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda e: self.on_back()),
                 ft.Text("Task Overview", size=20, weight="bold", expand=True),
-            ]
-        )
-
-        button_row = ft.Row(
-            [
                 ft.ElevatedButton("CSV", icon=ft.Icons.DOWNLOAD, on_click=self.export_csv),
                 ft.OutlinedButton("JSON", icon=ft.Icons.CODE, on_click=self.export_json),
-            ],
-            alignment=ft.MainAxisAlignment.END if not self.is_mobile else ft.MainAxisAlignment.START
-        )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
 
-        if self.is_mobile:
-            return ft.Column([title_row, button_row], spacing=10)
-        return ft.Row([title_row, button_row], alignment="spaceBetween")
-
-    def _build_stats_row(self):
-        # Stats stack vertically on very small screens or use wrap
-        return ft.Row(
-            spacing=10,
-            wrap=True,
-            controls=[
+            # Stats Cards
+            ft.Row([
                 self._stat_card("Total", self.total_txt, ft.Colors.BLUE_600),
                 self._stat_card("Open", self.open_txt, ft.Colors.GREEN_600),
                 self._stat_card("Closed", self.closed_txt, ft.Colors.RED_600),
-            ],
-        )
+            ], wrap=True, spacing=15),
 
-    def refresh_table(self):
-        self.table.rows.clear()
+            # Filters
+            ft.Row([self.status_filter, self.task_filter], spacing=10),
 
-        # Re-build layout controls to reflect current is_mobile state
-        self.main_content.controls = [
-            self._build_header(),
-            self._build_stats_row(),
-            ft.Row([self.status_filter, self.task_filter], wrap=self.is_mobile),
+            # Main Content Card
             ft.Container(
-                padding=12,
-                border_radius=12,
+                expand=True,
+                padding=15,
                 bgcolor=ft.Colors.WHITE,
+                border_radius=12,
                 border=ft.border.all(1, ft.Colors.GREY_300),
-                content=ft.Column(
-                    controls=[
-                        ft.Text("Tasks", size=16, weight="bold"),
-                        # Horizontal scroll for the table on mobile
-                        ft.Row([self.table], scroll=ft.ScrollMode.ALWAYS)
-                    ]
-                )
-            )
+                content=ft.Column([
+                    ft.Text("Task Records", size=16, weight="bold"),
+                    self.desktop_table_area,
+                    self.mobile_list_area,
+                ], spacing=10)
+            ),
         ]
 
-        tasks = fetch_tasks_for_user()
-        status_f = self.status_filter.value.lower()
+    def refresh_table(self):
+        if not self._mounted:
+            return
+
+        tasks = fetch_tasks_for_user() or []
+        status_f = (self.status_filter.value or "All").lower()
         search_f = (self.task_filter.value or "").lower()
 
         total = open_c = closed = 0
+        rows = []
+        cards = []
 
         for task in tasks:
             task_status = (task.get("status") or "open").lower()
-            total += 1
-            if task_status == "open": open_c += 1
-            if task_status == "closed": closed += 1
 
+            # Counter logic
+            total += 1
+            if task_status == "open":
+                open_c += 1
+            elif task_status == "closed":
+                closed += 1
+
+            # Filter logic
             if status_f != "all" and task_status != status_f:
                 continue
 
@@ -158,100 +174,138 @@ class TaskTablePage(ft.Container):
 
             for sub in subtasks:
                 sub_title = sub.get("title", "—")
+                # Search filter check
                 if search_f and search_f not in f"{task.get('title', '')} {sub_title}".lower():
                     continue
 
-                self.table.rows.append(
+                pdf_url = sub.get("pdf_url") or task.get("pdf_url")
+                done = bool(sub.get("done"))
+
+                # Desktop Row Construction
+                rows.append(
                     ft.DataRow(
                         cells=[
                             ft.DataCell(ft.Text(task.get("title", ""), weight="bold")),
                             ft.DataCell(self._status_badge(task_status)),
-                            ft.DataCell(ft.Text(assignee_names)),
+                            ft.DataCell(ft.Text(assignee_names, size=12)),
                             ft.DataCell(ft.Text(sub_title)),
-                            ft.DataCell(self._done_pill(sub.get("done"))),
+                            ft.DataCell(self._done_pill(done, task, sub)),
                             ft.DataCell(
                                 ft.IconButton(
                                     icon=ft.Icons.PICTURE_AS_PDF,
                                     icon_color=ft.Colors.RED_600,
-                                    on_click=lambda e,
-                                                    url=sub.get("pdf_url") or task.get("pdf_url"): self.page.launch_url(
-                                        url),
-                                ) if (sub.get("pdf_url") or task.get("pdf_url")) else ft.Text("—")
+                                    on_click=lambda e, url=pdf_url: self.page.launch_url(url),
+                                ) if pdf_url else ft.Text("—")
                             ),
-                        ],
+                        ]
+                    )
+                )
+
+                # Mobile Card Construction
+                cards.append(
+                    ft.Container(
+                        padding=12,
+                        border_radius=10,
+                        border=ft.border.all(1, ft.Colors.GREY_200),
+                        bgcolor=ft.Colors.WHITE,
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Text(task.get("title", ""), weight="bold", expand=True),
+                                self._status_badge(task_status)
+                            ]),
+                            ft.Text(f"Subtask: {sub_title}", size=13),
+                            ft.Row([
+                                ft.Text(f"By: {assignee_names}", size=11, color=ft.Colors.GREY_600),
+                                ft.IconButton(ft.Icons.PICTURE_AS_PDF, icon_size=18,
+                                              on_click=lambda e: self.page.launch_url(
+                                                  pdf_url)) if pdf_url else ft.Container()
+                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                        ], spacing=5)
                     )
                 )
 
         self.total_txt.value = str(total)
         self.open_txt.value = str(open_c)
         self.closed_txt.value = str(closed)
-        self.page.update()
 
-    # ---------------- UI helpers ----------------
+        self.table.rows = rows
+        self.mobile_list.controls = cards
+        self.update()
+
+    # ---------------- UI Helpers ----------------
 
     def _stat_card(self, title, value_control, color):
-        # Make cards narrower on mobile
         return ft.Container(
-            width=140 if self.is_mobile else 160,
-            padding=12,
+            width=150,
+            padding=15,
             border_radius=12,
             bgcolor=color,
-            content=ft.Column(
-                horizontal_alignment="center",
-                spacing=4,
-                controls=[
-                    ft.Text(title.upper(), size=10, weight="bold", color=ft.Colors.WHITE70),
-                    value_control,
-                ],
-            ),
+            content=ft.Column([
+                ft.Text(title.upper(), size=10, weight="bold", color=ft.Colors.WHITE70),
+                value_control,
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
         )
 
     def _status_badge(self, status: str):
+        color = ft.Colors.GREEN_600 if status == "open" else ft.Colors.RED_600
         return ft.Container(
-            padding=ft.padding.symmetric(horizontal=8, vertical=2),
-            border_radius=20,
-            bgcolor=ft.Colors.GREEN_600 if status == "open" else ft.Colors.RED_600,
-            content=ft.Text(status.capitalize(), size=11, color=ft.Colors.WHITE, weight="bold"),
+            padding=ft.padding.symmetric(horizontal=10, vertical=4),
+            border_radius=15,
+            bgcolor=color,
+            content=ft.Text(status.capitalize(), size=10, color=ft.Colors.WHITE, weight="bold"),
         )
 
-    def _done_pill(self, done: bool):
-        return ft.Container(
-            padding=ft.padding.symmetric(horizontal=8, vertical=2),
-            border_radius=20,
-            bgcolor=ft.Colors.GREEN_600 if done else ft.Colors.GREY_600,
-            content=ft.Text("Done" if done else "Pending", size=11, color=ft.Colors.WHITE, weight="bold"),
+    def _done_pill(self, done: bool, task, sub):
+        # Interactive pill to toggle status directly from table
+        color = ft.Colors.BLUE_600 if done else ft.Colors.GREY_400
+        return ft.GestureDetector(
+            on_tap=lambda e: self._toggle_subtask_direct(task, sub, not done),
+            content=ft.Container(
+                padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                border_radius=15,
+                bgcolor=color,
+                content=ft.Text("Done" if done else "Pending", size=10, color=ft.Colors.WHITE, weight="bold"),
+            )
         )
 
-    # ---------------- Data & Export helpers ----------------
+    # ---------------- Logic ----------------
+
+    def _toggle_subtask_direct(self, task, subtask, new_val):
+        subs = self._as_list(task.get("subtasks"))
+        for s in subs:
+            if s.get("id") == subtask.get("id"):
+                s["done"] = new_val
+        set_task_subtasks(task["id"], subs)
+        self.refresh_table()
+
     def _as_list(self, val):
         if isinstance(val, list): return val
         try:
-            return json.loads(val) if isinstance(val, str) else []
+            return json.loads(val) if val else []
         except:
             return []
 
     def _load_users(self):
         try:
-            users = self.supabase.table("profiles").select("id,email,full_name").execute().data or []
-            self.users_map = {u["id"]: (u.get("full_name") or u.get("email")) for u in users}
+            res = self.supabase.table("profiles").select("id,full_name,email").execute()
+            self.users_map = {u["id"]: (u.get("full_name") or u.get("email") or u["id"][:6]) for u in res.data}
         except:
             self.users_map = {}
 
     def export_csv(self, e):
-        tasks_data = []
-        tasks = fetch_tasks_for_user()
-        for task in tasks:
-            for sub in (self._as_list(task.get("subtasks")) or [{}]):
-                tasks_data.append({
-                    "Task": task.get("title"),
-                    "Status": task.get("status"),
-                    "Subtask": sub.get("title", "—"),
-                    "Done": "Yes" if sub.get("done") else "No"
+        tasks = fetch_tasks_for_user() or []
+        data = []
+        for t in tasks:
+            for s in self._as_list(t.get("subtasks")):
+                data.append({
+                    "Task": t.get("title"),
+                    "Status": t.get("status"),
+                    "Subtask": s.get("title"),
+                    "Done": s.get("done")
                 })
-        df = pd.DataFrame(tasks_data)
-        csv_str = df.to_csv(index=False)
-        self.page.launch_url(f"data:text/csv;charset=utf-8,{csv_str}")
+        df = pd.DataFrame(data)
+        self.page.launch_url(f"data:text/csv;charset=utf-8,{df.to_csv(index=False)}")
 
     def export_json(self, e):
-        tasks = fetch_tasks_for_user()
+        tasks = fetch_tasks_for_user() or []
         self.page.launch_url(f"data:application/json;charset=utf-8,{json.dumps(tasks)}")
