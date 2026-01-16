@@ -1,10 +1,11 @@
+# pages/task_table.py
 import json
 import pandas as pd
 import flet as ft
 import asyncio
 
 from app.auth import get_current_user, get_supabase
-from app.db_client import fetch_tasks_for_user, update_task, set_task_subtasks
+from app.db_client import fetch_tasks_for_user, set_task_subtasks
 
 
 class TaskTablePage(ft.Container):
@@ -13,7 +14,7 @@ class TaskTablePage(ft.Container):
         self.page = page
         self.on_back = on_back
 
-        # Layout Properties
+        # Layout
         self.expand = True
         self.padding = 16
         self.bgcolor = ft.Colors.BLUE_GREY_50
@@ -26,16 +27,16 @@ class TaskTablePage(ft.Container):
 
         self._mounted = False
 
-        # Initial Responsive Check
-        current_width = self.page.width if self.page.width else 1000
-        self.is_mobile = current_width < 800
+        # Responsive (window_width is more reliable on web/mobile)
+        w = getattr(self.page, "window_width", None) or self.page.width or 1000
+        self.is_mobile = w < 800
 
-        # ---------- Stats Elements ----------
+        # ---------- Stats ----------
         self.total_txt = ft.Text("0", color=ft.Colors.WHITE, size=22, weight="bold")
         self.open_txt = ft.Text("0", color=ft.Colors.WHITE, size=22, weight="bold")
         self.closed_txt = ft.Text("0", color=ft.Colors.WHITE, size=22, weight="bold")
 
-        # ---------- Filter Elements ----------
+        # ---------- Filters ----------
         self.status_filter = ft.Dropdown(
             label="Status",
             options=[
@@ -54,7 +55,7 @@ class TaskTablePage(ft.Container):
             on_change=lambda e: self.refresh_table(),
         )
 
-        # ---------- Table Component ----------
+        # ---------- Table ----------
         self.table = ft.DataTable(
             column_spacing=20,
             heading_row_color=ft.Colors.GREY_100,
@@ -69,60 +70,87 @@ class TaskTablePage(ft.Container):
             rows=[],
         )
 
-        # ---------- Mobile List Component ----------
+        # ---------- Mobile List ----------
         self.mobile_list = ft.ListView(spacing=10, padding=0, expand=True)
 
-        # ---------- Responsive Containers ----------
-        self.desktop_table_area = ft.Column(
-            expand=True,
-            scroll=ft.ScrollMode.ADAPTIVE,
-            controls=[
-                ft.Row([self.table], scroll=ft.ScrollMode.ALWAYS)
-            ],
-            visible=not self.is_mobile
+        # ---------- Desktop table wrapper (fixed constraints) ----------
+        self.desktop_table_area = ft.Container(
+            height=520,
+            visible=not self.is_mobile,
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        width=1100,  # horizontal scroll area
+                        content=self.table,
+                    )
+                ],
+                scroll=ft.ScrollMode.ALWAYS,
+            ),
         )
 
-        self.mobile_list_area = ft.Column(
-            expand=True,
-            controls=[self.mobile_list],
-            visible=self.is_mobile
+        # ---------- Mobile wrapper ----------
+        self.mobile_list_area = ft.Container(
+            height=520,
+            visible=self.is_mobile,
+            content=self.mobile_list,
         )
 
-        # ---------- Main Page Body ----------
+        # ---------- Page Body ----------
         self.body = ft.Column(expand=True, spacing=15)
         self.content = self.body
 
         self._build_layout()
 
+    # ---------------- Lifecycle ----------------
+
     def did_mount(self):
         self._mounted = True
-        # Force a check of window dimensions on mount
+
+        # Defer one tick so web layout settles before drawing table/list
+        try:
+            self.page.run_task(self._after_mount)
+        except Exception:
+            self._sync_responsive()
+            self.refresh_table()
+
+    async def _after_mount(self):
+        await asyncio.sleep(0)
         self._sync_responsive()
         self.refresh_table()
 
+    # ---------------- Responsive ----------------
+
     def _sync_responsive(self):
-        w = self.page.width if self.page.width else 1000
+        w = getattr(self.page, "window_width", None) or self.page.width or 1000
         self.is_mobile = w < 800
         self.desktop_table_area.visible = not self.is_mobile
         self.mobile_list_area.visible = self.is_mobile
-        self.update()
+
+    # ---------------- UI ----------------
 
     def _build_layout(self):
         self.body.controls = [
             # Header
-            ft.Row([
-                ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda e: self.on_back()),
-                ft.Text("Task Overview", size=20, weight="bold", expand=True),
-                ft.ElevatedButton("CSV", icon=ft.Icons.DOWNLOAD, on_click=self.export_csv),
-                ft.OutlinedButton("JSON", icon=ft.Icons.CODE, on_click=self.export_json),
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row(
+                [
+                    ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda e: self.on_back()),
+                    ft.Text("Task Overview", size=20, weight="bold", expand=True),
+                    ft.ElevatedButton("CSV", icon=ft.Icons.DOWNLOAD, on_click=self.export_csv),
+                    ft.OutlinedButton("JSON", icon=ft.Icons.CODE, on_click=self.export_json),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
 
             # Stats Cards
-            ft.Row([
-                self._stat_card("Total", self.total_txt, ft.Colors.BLUE_600),
-                self._stat_card("Open", self.open_txt, ft.Colors.GREEN_600),
-                self._stat_card("Closed", self.closed_txt, ft.Colors.RED_600),
-            ], wrap=True, spacing=15),
+            ft.Row(
+                [
+                    self._stat_card("Total", self.total_txt, ft.Colors.BLUE_600),
+                    self._stat_card("Open", self.open_txt, ft.Colors.GREEN_600),
+                    self._stat_card("Closed", self.closed_txt, ft.Colors.RED_600),
+                ],
+                wrap=True,
+                spacing=15,
+            ),
 
             # Filters
             ft.Row([self.status_filter, self.task_filter], spacing=10),
@@ -134,17 +162,24 @@ class TaskTablePage(ft.Container):
                 bgcolor=ft.Colors.WHITE,
                 border_radius=12,
                 border=ft.border.all(1, ft.Colors.GREY_300),
-                content=ft.Column([
-                    ft.Text("Task Records", size=16, weight="bold"),
-                    self.desktop_table_area,
-                    self.mobile_list_area,
-                ], spacing=10)
+                content=ft.Column(
+                    [
+                        ft.Text("Task Records", size=16, weight="bold"),
+                        self.desktop_table_area,
+                        self.mobile_list_area,
+                    ],
+                    spacing=10,
+                ),
             ),
         ]
+
+    # ---------------- Data ----------------
 
     def refresh_table(self):
         if not self._mounted:
             return
+
+        self._sync_responsive()
 
         tasks = fetch_tasks_for_user() or []
         status_f = (self.status_filter.value or "All").lower()
@@ -157,14 +192,12 @@ class TaskTablePage(ft.Container):
         for task in tasks:
             task_status = (task.get("status") or "open").lower()
 
-            # Counter logic
             total += 1
             if task_status == "open":
                 open_c += 1
             elif task_status == "closed":
                 closed += 1
 
-            # Filter logic
             if status_f != "all" and task_status != status_f:
                 continue
 
@@ -172,16 +205,23 @@ class TaskTablePage(ft.Container):
             assignee_names = ", ".join([self.users_map.get(uid, uid[:6]) for uid in assignees]) or "—"
             subtasks = self._as_list(task.get("subtasks")) or [{}]
 
+            # overall task progress for mobile
+            all_subs = self._as_list(task.get("subtasks")) or []
+            tot_subs = len(all_subs)
+            done_subs = sum(1 for s in all_subs if s.get("done"))
+            task_progress = (done_subs / tot_subs) if tot_subs else 0.0
+            progress_label = f"{done_subs}/{tot_subs}"
+
             for sub in subtasks:
                 sub_title = sub.get("title", "—")
-                # Search filter check
+
                 if search_f and search_f not in f"{task.get('title', '')} {sub_title}".lower():
                     continue
 
                 pdf_url = sub.get("pdf_url") or task.get("pdf_url")
                 done = bool(sub.get("done"))
 
-                # Desktop Row Construction
+                # -------- Desktop row --------
                 rows.append(
                     ft.DataRow(
                         cells=[
@@ -195,32 +235,60 @@ class TaskTablePage(ft.Container):
                                     icon=ft.Icons.PICTURE_AS_PDF,
                                     icon_color=ft.Colors.RED_600,
                                     on_click=lambda e, url=pdf_url: self.page.launch_url(url),
-                                ) if pdf_url else ft.Text("—")
+                                )
+                                if pdf_url
+                                else ft.Text("—")
                             ),
                         ]
                     )
                 )
 
-                # Mobile Card Construction
+                # -------- Mobile card --------
                 cards.append(
                     ft.Container(
                         padding=12,
                         border_radius=10,
                         border=ft.border.all(1, ft.Colors.GREY_200),
                         bgcolor=ft.Colors.WHITE,
-                        content=ft.Column([
-                            ft.Row([
-                                ft.Text(task.get("title", ""), weight="bold", expand=True),
-                                self._status_badge(task_status)
-                            ]),
-                            ft.Text(f"Subtask: {sub_title}", size=13),
-                            ft.Row([
-                                ft.Text(f"By: {assignee_names}", size=11, color=ft.Colors.GREY_600),
-                                ft.IconButton(ft.Icons.PICTURE_AS_PDF, icon_size=18,
-                                              on_click=lambda e: self.page.launch_url(
-                                                  pdf_url)) if pdf_url else ft.Container()
-                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-                        ], spacing=5)
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Text(task.get("title", ""), weight="bold", expand=True),
+                                        self._status_badge(task_status),
+                                    ]
+                                ),
+                                ft.Text(f"Subtask: {sub_title}", size=13),
+
+                                # ✅ Progress (same meaning as desktop column: Done/Pending pill for subtask)
+                                self._done_pill(done, task, sub),
+
+                                # ✅ Overall task progress bar
+                                ft.Row(
+                                    [
+                                        ft.Text("Overall", size=11, color=ft.Colors.GREY_600),
+                                        ft.Text(progress_label, size=11, color=ft.Colors.GREY_600),
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                                ft.ProgressBar(value=task_progress),
+
+                                ft.Row(
+                                    [
+                                        ft.Text(f"By: {assignee_names}", size=11, color=ft.Colors.GREY_600),
+                                        ft.IconButton(
+                                            ft.Icons.PICTURE_AS_PDF,
+                                            icon_size=18,
+                                            on_click=lambda e, url=pdf_url: self.page.launch_url(url),
+                                        )
+                                        if pdf_url
+                                        else ft.Container(),
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                            ],
+                            spacing=6,
+                        ),
                     )
                 )
 
@@ -230,6 +298,7 @@ class TaskTablePage(ft.Container):
 
         self.table.rows = rows
         self.mobile_list.controls = cards
+
         self.update()
 
     # ---------------- UI Helpers ----------------
@@ -240,10 +309,14 @@ class TaskTablePage(ft.Container):
             padding=15,
             border_radius=12,
             bgcolor=color,
-            content=ft.Column([
-                ft.Text(title.upper(), size=10, weight="bold", color=ft.Colors.WHITE70),
-                value_control,
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+            content=ft.Column(
+                [
+                    ft.Text(title.upper(), size=10, weight="bold", color=ft.Colors.WHITE70),
+                    value_control,
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=2,
+            ),
         )
 
     def _status_badge(self, status: str):
@@ -256,7 +329,6 @@ class TaskTablePage(ft.Container):
         )
 
     def _done_pill(self, done: bool, task, sub):
-        # Interactive pill to toggle status directly from table
         color = ft.Colors.BLUE_600 if done else ft.Colors.GREY_400
         return ft.GestureDetector(
             on_tap=lambda e: self._toggle_subtask_direct(task, sub, not done),
@@ -265,7 +337,7 @@ class TaskTablePage(ft.Container):
                 border_radius=15,
                 bgcolor=color,
                 content=ft.Text("Done" if done else "Pending", size=10, color=ft.Colors.WHITE, weight="bold"),
-            )
+            ),
         )
 
     # ---------------- Logic ----------------
@@ -279,30 +351,38 @@ class TaskTablePage(ft.Container):
         self.refresh_table()
 
     def _as_list(self, val):
-        if isinstance(val, list): return val
+        if isinstance(val, list):
+            return val
         try:
             return json.loads(val) if val else []
-        except:
+        except Exception:
             return []
 
     def _load_users(self):
         try:
             res = self.supabase.table("profiles").select("id,full_name,email").execute()
-            self.users_map = {u["id"]: (u.get("full_name") or u.get("email") or u["id"][:6]) for u in res.data}
-        except:
+            self.users_map = {
+                u["id"]: (u.get("full_name") or u.get("email") or u["id"][:6])
+                for u in (res.data or [])
+            }
+        except Exception:
             self.users_map = {}
+
+    # ---------------- export ----------------
 
     def export_csv(self, e):
         tasks = fetch_tasks_for_user() or []
         data = []
         for t in tasks:
             for s in self._as_list(t.get("subtasks")):
-                data.append({
-                    "Task": t.get("title"),
-                    "Status": t.get("status"),
-                    "Subtask": s.get("title"),
-                    "Done": s.get("done")
-                })
+                data.append(
+                    {
+                        "Task": t.get("title"),
+                        "Status": t.get("status"),
+                        "Subtask": s.get("title"),
+                        "Done": s.get("done"),
+                    }
+                )
         df = pd.DataFrame(data)
         self.page.launch_url(f"data:text/csv;charset=utf-8,{df.to_csv(index=False)}")
 
