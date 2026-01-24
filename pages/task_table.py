@@ -14,9 +14,8 @@ class TaskTablePage(ft.Container):
         self.page = page
         self.on_back = on_back
 
-        # Layout
         self.expand = True
-        self.padding = 16
+        self.padding = 12
         self.bgcolor = ft.Colors.BLUE_GREY_50
 
         self.supabase = get_supabase()
@@ -27,9 +26,8 @@ class TaskTablePage(ft.Container):
 
         self._mounted = False
 
-        # Responsive (window_width is more reliable on web/mobile)
-        w = getattr(self.page, "window_width", None) or self.page.width or 1000
-        self.is_mobile = w < 800
+        # responsive
+        self.is_mobile = self._get_width() < 800
 
         # ---------- Stats ----------
         self.total_txt = ft.Text("0", color=ft.Colors.WHITE, size=22, weight="bold")
@@ -48,7 +46,6 @@ class TaskTablePage(ft.Container):
             width=160,
             on_change=lambda e: self.refresh_table(),
         )
-
         self.task_filter = ft.TextField(
             label="Search task or subtask...",
             expand=True,
@@ -70,43 +67,37 @@ class TaskTablePage(ft.Container):
             rows=[],
         )
 
-        # ---------- Mobile List ----------
-        self.mobile_list = ft.ListView(spacing=10, padding=0, expand=True)
-
-        # ---------- Desktop table wrapper (fixed constraints) ----------
+        # Desktop: table inside horizontal scroll row
         self.desktop_table_area = ft.Container(
-            height=520,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=12,
+            border=ft.border.all(1, ft.Colors.GREY_300),
+            padding=10,
             visible=not self.is_mobile,
-            content=ft.Row(
-                controls=[
-                    ft.Container(
-                        width=1100,  # horizontal scroll area
-                        content=self.table,
-                    )
-                ],
-                scroll=ft.ScrollMode.ALWAYS,
-            ),
+            content=ft.Row([self.table], scroll=ft.ScrollMode.ALWAYS),
         )
 
-        # ---------- Mobile wrapper ----------
+        # Mobile list: use Column, and let the whole page ListView scroll
+        self.mobile_list = ft.Column(spacing=10)
         self.mobile_list_area = ft.Container(
-            height=520,
             visible=self.is_mobile,
             content=self.mobile_list,
         )
 
-        # ---------- Page Body ----------
-        self.body = ft.Column(expand=True, spacing=15)
+        # ✅ IMPORTANT: whole page scroll container
+        self.body = ft.ListView(
+            expand=True,
+            spacing=12,
+            padding=12,
+            auto_scroll=False,
+        )
         self.content = self.body
 
         self._build_layout()
 
-    # ---------------- Lifecycle ----------------
-
+    # ---------------- lifecycle ----------------
     def did_mount(self):
         self._mounted = True
-
-        # Defer one tick so web layout settles before drawing table/list
         try:
             self.page.run_task(self._after_mount)
         except Exception:
@@ -118,63 +109,67 @@ class TaskTablePage(ft.Container):
         self._sync_responsive()
         self.refresh_table()
 
-    # ---------------- Responsive ----------------
+    # ---------------- responsive ----------------
+    def _get_width(self) -> float:
+        return getattr(self.page, "window_width", None) or self.page.width or 1000
 
     def _sync_responsive(self):
-        w = getattr(self.page, "window_width", None) or self.page.width or 1000
-        self.is_mobile = w < 800
+        self.is_mobile = self._get_width() < 800
         self.desktop_table_area.visible = not self.is_mobile
         self.mobile_list_area.visible = self.is_mobile
 
     # ---------------- UI ----------------
-
     def _build_layout(self):
-        self.body.controls = [
-            # Header
-            ft.Row(
+        header = ft.Container(
+            padding=12,
+            border_radius=16,
+            bgcolor=ft.Colors.WHITE,
+            border=ft.border.all(1, ft.Colors.GREY_200),
+            content=ft.Row(
                 [
                     ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda e: self.on_back()),
-                    ft.Text("Task Overview", size=20, weight="bold", expand=True),
+                    ft.Text("Task Overview", size=18, weight="bold", expand=True),
                     ft.ElevatedButton("CSV", icon=ft.Icons.DOWNLOAD, on_click=self.export_csv),
                     ft.OutlinedButton("JSON", icon=ft.Icons.CODE, on_click=self.export_json),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            ),
-
-            # Stats Cards
-            ft.Row(
-                [
-                    self._stat_card("Total", self.total_txt, ft.Colors.BLUE_600),
-                    self._stat_card("Open", self.open_txt, ft.Colors.GREEN_600),
-                    self._stat_card("Closed", self.closed_txt, ft.Colors.RED_600),
-                ],
                 wrap=True,
-                spacing=15,
             ),
+        )
 
-            # Filters
-            ft.Row([self.status_filter, self.task_filter], spacing=10),
+        stats = ft.Row(
+            [
+                self._stat_card("Total", self.total_txt, ft.Colors.BLUE_600),
+                self._stat_card("Open", self.open_txt, ft.Colors.GREEN_600),
+                self._stat_card("Closed", self.closed_txt, ft.Colors.RED_600),
+            ],
+            wrap=True,
+            spacing=10,
+        )
 
-            # Main Content Card
-            ft.Container(
-                expand=True,
-                padding=15,
-                bgcolor=ft.Colors.WHITE,
-                border_radius=12,
-                border=ft.border.all(1, ft.Colors.GREY_300),
-                content=ft.Column(
-                    [
-                        ft.Text("Task Records", size=16, weight="bold"),
-                        self.desktop_table_area,
-                        self.mobile_list_area,
-                    ],
-                    spacing=10,
-                ),
+        filters = ft.Container(
+            padding=12,
+            border_radius=16,
+            bgcolor=ft.Colors.WHITE,
+            border=ft.border.all(1, ft.Colors.GREY_200),
+            content=ft.Row(
+                [self.status_filter, self.task_filter],
+                wrap=True,
+                spacing=10,
             ),
+        )
+
+        self.body.controls = [
+            header,
+            stats,
+            filters,
+            ft.Text("Task Records", size=14, weight="bold", color=ft.Colors.BLUE_GREY_700),
+            self.desktop_table_area,
+            self.mobile_list_area,
+            ft.Container(height=20),  # bottom padding
         ]
 
-    # ---------------- Data ----------------
-
+    # ---------------- data ----------------
     def refresh_table(self):
         if not self._mounted:
             return
@@ -187,7 +182,7 @@ class TaskTablePage(ft.Container):
 
         total = open_c = closed = 0
         rows = []
-        cards = []
+        mobile_cards = []
 
         for task in tasks:
             task_status = (task.get("status") or "open").lower()
@@ -203,16 +198,16 @@ class TaskTablePage(ft.Container):
 
             assignees = self._as_list(task.get("assignees"))
             assignee_names = ", ".join([self.users_map.get(uid, uid[:6]) for uid in assignees]) or "—"
-            subtasks = self._as_list(task.get("subtasks")) or [{}]
 
-            # overall task progress for mobile
             all_subs = self._as_list(task.get("subtasks")) or []
             tot_subs = len(all_subs)
             done_subs = sum(1 for s in all_subs if s.get("done"))
             task_progress = (done_subs / tot_subs) if tot_subs else 0.0
             progress_label = f"{done_subs}/{tot_subs}"
 
-            for sub in subtasks:
+            subtasks_for_rows = all_subs or [{}]
+
+            for sub in subtasks_for_rows:
                 sub_title = sub.get("title", "—")
 
                 if search_f and search_f not in f"{task.get('title', '')} {sub_title}".lower():
@@ -221,7 +216,7 @@ class TaskTablePage(ft.Container):
                 pdf_url = sub.get("pdf_url") or task.get("pdf_url")
                 done = bool(sub.get("done"))
 
-                # -------- Desktop row --------
+                # Desktop row
                 rows.append(
                     ft.DataRow(
                         cells=[
@@ -243,27 +238,26 @@ class TaskTablePage(ft.Container):
                     )
                 )
 
-                # -------- Mobile card --------
-                cards.append(
+                # Mobile card
+                mobile_cards.append(
                     ft.Container(
                         padding=12,
-                        border_radius=10,
-                        border=ft.border.all(1, ft.Colors.GREY_200),
+                        border_radius=16,
                         bgcolor=ft.Colors.WHITE,
+                        border=ft.border.all(1, ft.Colors.GREY_200),
                         content=ft.Column(
-                            [
+                            spacing=8,
+                            controls=[
                                 ft.Row(
                                     [
                                         ft.Text(task.get("title", ""), weight="bold", expand=True),
                                         self._status_badge(task_status),
-                                    ]
+                                    ],
+                                    wrap=True,
                                 ),
                                 ft.Text(f"Subtask: {sub_title}", size=13),
-
-                                # ✅ Progress (same meaning as desktop column: Done/Pending pill for subtask)
                                 self._done_pill(done, task, sub),
 
-                                # ✅ Overall task progress bar
                                 ft.Row(
                                     [
                                         ft.Text("Overall", size=11, color=ft.Colors.GREY_600),
@@ -275,19 +269,19 @@ class TaskTablePage(ft.Container):
 
                                 ft.Row(
                                     [
-                                        ft.Text(f"By: {assignee_names}", size=11, color=ft.Colors.GREY_600),
+                                        ft.Text(f"By: {assignee_names}", size=11, color=ft.Colors.GREY_600, expand=True),
                                         ft.IconButton(
                                             ft.Icons.PICTURE_AS_PDF,
                                             icon_size=18,
+                                            tooltip="Open PDF",
                                             on_click=lambda e, url=pdf_url: self.page.launch_url(url),
                                         )
                                         if pdf_url
-                                        else ft.Container(),
+                                        else ft.Container(width=0, height=0),
                                     ],
                                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 ),
                             ],
-                            spacing=6,
                         ),
                     )
                 )
@@ -297,17 +291,16 @@ class TaskTablePage(ft.Container):
         self.closed_txt.value = str(closed)
 
         self.table.rows = rows
-        self.mobile_list.controls = cards
+        self.mobile_list.controls = mobile_cards
 
         self.update()
 
-    # ---------------- UI Helpers ----------------
-
+    # ---------------- helpers ----------------
     def _stat_card(self, title, value_control, color):
         return ft.Container(
             width=150,
-            padding=15,
-            border_radius=12,
+            padding=12,
+            border_radius=16,
             bgcolor=color,
             content=ft.Column(
                 [
@@ -329,18 +322,16 @@ class TaskTablePage(ft.Container):
         )
 
     def _done_pill(self, done: bool, task, sub):
-        color = ft.Colors.BLUE_600 if done else ft.Colors.GREY_400
+        color = ft.Colors.BLUE_600 if done else ft.Colors.GREY_500
         return ft.GestureDetector(
             on_tap=lambda e: self._toggle_subtask_direct(task, sub, not done),
             content=ft.Container(
                 padding=ft.padding.symmetric(horizontal=10, vertical=4),
-                border_radius=15,
+                border_radius=16,
                 bgcolor=color,
                 content=ft.Text("Done" if done else "Pending", size=10, color=ft.Colors.WHITE, weight="bold"),
             ),
         )
-
-    # ---------------- Logic ----------------
 
     def _toggle_subtask_direct(self, task, subtask, new_val):
         subs = self._as_list(task.get("subtasks"))
@@ -369,7 +360,6 @@ class TaskTablePage(ft.Container):
             self.users_map = {}
 
     # ---------------- export ----------------
-
     def export_csv(self, e):
         tasks = fetch_tasks_for_user() or []
         data = []
