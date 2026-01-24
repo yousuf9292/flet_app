@@ -81,7 +81,7 @@ class DashboardPage(ft.Container):
         self.content = self.content_column
 
         # Resize
-        self.page.on_resize = self._handle_resize
+
 
         self.refresh()
 
