@@ -6,6 +6,8 @@ from pages.login import LoginPage
 from pages.signup import SignupPage
 from pages.dashboard import DashboardPage
 from pages.task_table import TaskTablePage
+from pages.clients import ClientsPage
+
 
 import os
 from dotenv import load_dotenv
@@ -74,7 +76,14 @@ def main(page: ft.Page):
                     bgcolor=ft.Colors.BLUE_GREY_50,
                 )
             )
-
+        elif page.route == "/clients":
+            page.views.append(
+                ft.View(
+                    "/clients",
+                    [ClientsPage(page, on_back=lambda: go("/dashboard"))],
+                    padding=0,
+                )
+            )
         # -------- LOGIN (default) --------
         else:
             page.views.append(
