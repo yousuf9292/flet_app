@@ -1,3 +1,4 @@
+# pages/clients.py
 import flet as ft
 from app.db_client import fetch_clients, add_client, update_client, delete_client
 
@@ -7,12 +8,10 @@ class ClientsPage(ft.Container):
         super().__init__()
         self.page = page
         self.on_back = on_back
+
         self.expand = True
         self.padding = 12
         self.bgcolor = ft.Colors.BLUE_GREY_50
-
-        self.is_mobile = (getattr(self.page, "window_width", None) or self.page.width or 1000) < 700
-        self.page.on_resize = self._on_resize
 
         # state
         self.editing_client_id = None
@@ -23,32 +22,44 @@ class ClientsPage(ft.Container):
             hint_text="Search client (branch, phone, email, city)...",
             prefix_icon=ft.Icons.SEARCH,
             border_radius=12,
-            on_change=lambda e: self._render_list(),
+            on_change=self._on_search_change,
         )
 
         # list
         self.clients_list = ft.ListView(expand=True, spacing=10, padding=0)
 
-        # add button
+        # floating add button
         self.add_btn = ft.FloatingActionButton(
             icon=ft.Icons.ADD,
             text="Add",
-            on_click=lambda e: self._open_form(mode="add"),
+            on_click=self._on_add_click,
         )
 
-        # Form fields (reused for add/edit)
+        # form fields (reused for add/edit)
         self.phone = ft.TextField(label="Phone", border_radius=12)
         self.email = ft.TextField(label="Email", border_radius=12)
         self.gst = ft.TextField(label="GST", border_radius=12)
         self.ntn = ft.TextField(label="NTN", border_radius=12)
+
         self.nic = ft.TextField(label="NIC", border_radius=12)
         self.city = ft.TextField(label="City", border_radius=12)
         self.area = ft.TextField(label="Area", border_radius=12)
-        self.branch_name = ft.TextField(label="Branch name", border_radius=12)
-        self.branch_address = ft.TextField(label="Branch address", multiline=True, min_lines=2, border_radius=12)
-        self.billing_address = ft.TextField(label="Billing address", multiline=True, min_lines=2, border_radius=12)
 
-        # container page content
+        self.branch_name = ft.TextField(label="Branch name", border_radius=12)
+        self.branch_address = ft.TextField(
+            label="Branch address",
+            multiline=True,
+            min_lines=2,
+            border_radius=12,
+        )
+        self.billing_address = ft.TextField(
+            label="Billing address",
+            multiline=True,
+            min_lines=2,
+            border_radius=12,
+        )
+
+        # page content
         self.content = ft.Stack(
             expand=True,
             controls=[
@@ -61,20 +72,24 @@ class ClientsPage(ft.Container):
                         self.clients_list,
                     ],
                 ),
-                # FAB on bottom-right
                 ft.Container(
                     content=self.add_btn,
                     alignment=ft.alignment.bottom_right,
                     padding=12,
-                )
+                ),
             ],
         )
 
         self.refresh()
 
-    # ---------------- responsive ----------------
-    def _on_resize(self, e):
-        self.is_mobile = (getattr(self.page, "window_width", None) or self.page.width or 1000) < 700
+    # ---------------- helpers ----------------
+    def _is_mobile(self) -> bool:
+        w = getattr(self.page, "window_width", None) or self.page.width or 1000
+        return w < 700
+
+    def _toast(self, msg: str):
+        self.page.snack_bar = ft.SnackBar(content=ft.Text(msg), open=True)
+        self.page.update()
 
     # ---------------- UI ----------------
     def _header(self):
@@ -99,24 +114,30 @@ class ClientsPage(ft.Container):
         self._render_list()
         self.page.update()
 
+    def _on_search_change(self, e):
+        self._render_list()
+
     def _render_list(self):
         q = (self.search.value or "").strip().lower()
 
         def match(c):
-            blob = " ".join([
-                str(c.get("branch_name") or ""),
-                str(c.get("person_phone") or ""),
-                str(c.get("person_email") or ""),
-                str(c.get("city") or ""),
-                str(c.get("area") or ""),
-                str(c.get("gst") or ""),
-                str(c.get("ntn") or ""),
-            ]).lower()
+            blob = " ".join(
+                [
+                    str(c.get("branch_name") or ""),
+                    str(c.get("person_phone") or ""),
+                    str(c.get("person_email") or ""),
+                    str(c.get("city") or ""),
+                    str(c.get("area") or ""),
+                    str(c.get("gst") or ""),
+                    str(c.get("ntn") or ""),
+                ]
+            ).lower()
             return q in blob
 
         items = [c for c in self.clients if match(c)] if q else list(self.clients)
 
         self.clients_list.controls.clear()
+
         if not items:
             self.clients_list.controls.append(
                 ft.Container(
@@ -131,7 +152,8 @@ class ClientsPage(ft.Container):
             for c in items:
                 self.clients_list.controls.append(self._client_card(c))
 
-        self.clients_list.update() if getattr(self.clients_list, "page", None) else None
+        # safe update
+        self.update()
 
     # ---------------- cards ----------------
     def _client_card(self, c: dict):
@@ -141,6 +163,13 @@ class ClientsPage(ft.Container):
         loc = f"{(c.get('city') or '').strip()} {(c.get('area') or '').strip()}".strip() or "—"
         gst = c.get("gst") or "—"
         ntn = c.get("ntn") or "—"
+
+        # bullet-proof handlers (no late-binding bugs)
+        def on_edit(_):
+            self._open_form(mode="edit", client=c)
+
+        def on_delete(_):
+            self._confirm_delete(c["id"])
 
         return ft.Container(
             padding=12,
@@ -153,12 +182,12 @@ class ClientsPage(ft.Container):
                     ft.Row(
                         [
                             ft.Text(title, weight="bold", size=16, expand=True),
-                            ft.IconButton(ft.Icons.EDIT, tooltip="Edit", on_click=lambda e, cc=c: self._open_form("edit", cc)),
+                            ft.IconButton(ft.Icons.EDIT, tooltip="Edit", on_click=on_edit),
                             ft.IconButton(
                                 ft.Icons.DELETE,
                                 tooltip="Delete",
                                 icon_color=ft.Colors.RED_400,
-                                on_click=lambda e, cid=c["id"]: self._confirm_delete(cid),
+                                on_click=on_delete,
                             ),
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -170,6 +199,10 @@ class ClientsPage(ft.Container):
                 ],
             ),
         )
+
+    # ---------------- add button ----------------
+    def _on_add_click(self, e):
+        self._open_form(mode="add", client=None)
 
     # ---------------- form ----------------
     def _open_form(self, mode="add", client=None):
@@ -186,9 +219,11 @@ class ClientsPage(ft.Container):
         else:
             self._clear_form()
 
-        form_content = ft.Column(
+        # ✅ Use ListView for scroll in mobile bottom sheet
+        form_content = ft.ListView(
+            expand=True,
             spacing=10,
-            scroll=ft.ScrollMode.AUTO,
+            padding=10,
             controls=[
                 ft.Text(title, size=18, weight="bold"),
                 self.phone,
@@ -201,8 +236,12 @@ class ClientsPage(ft.Container):
             ],
         )
 
+        # We'll define sheet as a variable so close() can remove it safely
+        sheet = None
+
         def close(_=None):
-            if sheet in self.page.overlay:
+            nonlocal sheet
+            if sheet and sheet in self.page.overlay:
                 self.page.overlay.remove(sheet)
             self.page.update()
 
@@ -219,22 +258,29 @@ class ClientsPage(ft.Container):
             close()
             self.refresh()
 
-        # Mobile: BottomSheet. Desktop: Dialog.
-        if self.is_mobile:
+        # Mobile: BottomSheet (scroll + proper height). Desktop: Dialog.
+        if self._is_mobile():
+            # Ensure height constraints so ListView can scroll
+            max_h = 620
+            page_h = getattr(self.page, "window_height", None) or self.page.height or 800
+            sheet_h = min(int(page_h * 0.85), max_h)
+
             sheet = ft.BottomSheet(
-                ft.Container(
+                content=ft.Container(
+                    height=sheet_h,
                     padding=14,
                     content=ft.Column(
+                        expand=True,
                         spacing=12,
                         controls=[
                             form_content,
                             ft.Row(
                                 [
-                                    ft.OutlinedButton("Cancel", on_click=lambda e: close()),
+                                    ft.OutlinedButton("Cancel", on_click=close),
                                     ft.ElevatedButton(btn_text, on_click=submit),
                                 ],
                                 alignment=ft.MainAxisAlignment.END,
-                            )
+                            ),
                         ],
                     ),
                 ),
@@ -246,10 +292,13 @@ class ClientsPage(ft.Container):
             sheet = ft.AlertDialog(
                 modal=True,
                 title=ft.Text(title),
-                content=ft.Container(width=520, content=form_content),
+                content=ft.Container(width=520, height=560, content=form_content),
                 actions=[
                     ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(sheet)),
-                    ft.ElevatedButton(btn_text, on_click=lambda e: (submit(e), self._close_dialog(sheet))),
+                    ft.ElevatedButton(
+                        btn_text,
+                        on_click=lambda e: (submit(e), self._close_dialog(sheet)),
+                    ),
                 ],
             )
             self.page.overlay.append(sheet)
@@ -284,19 +333,33 @@ class ClientsPage(ft.Container):
 
     def _clear_form(self):
         for f in [
-            self.phone, self.email, self.gst, self.ntn,
-            self.nic, self.city, self.area,
-            self.branch_name, self.branch_address, self.billing_address
+            self.phone,
+            self.email,
+            self.gst,
+            self.ntn,
+            self.nic,
+            self.city,
+            self.area,
+            self.branch_name,
+            self.branch_address,
+            self.billing_address,
         ]:
             f.value = ""
 
     # ---------------- delete ----------------
     def _confirm_delete(self, client_id: str):
+        dlg = None
+
+        def close(_=None):
+            nonlocal dlg
+            if dlg:
+                dlg.open = False
+            self.page.update()
+
         def yes(_):
             delete_client(client_id)
             self._toast("🗑️ Client deleted")
-            dlg.open = False
-            self.page.update()
+            close()
             self.refresh()
 
         dlg = ft.AlertDialog(
@@ -304,7 +367,7 @@ class ClientsPage(ft.Container):
             title=ft.Text("Delete client?"),
             content=ft.Text("This will remove the client permanently."),
             actions=[
-                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(dlg)),
+                ft.TextButton("Cancel", on_click=close),
                 ft.ElevatedButton("Delete", on_click=yes),
             ],
         )
@@ -315,8 +378,4 @@ class ClientsPage(ft.Container):
     # ---------------- helpers ----------------
     def _close_dialog(self, dlg):
         dlg.open = False
-        self.page.update()
-
-    def _toast(self, msg: str):
-        self.page.snack_bar = ft.SnackBar(content=ft.Text(msg), open=True)
         self.page.update()
