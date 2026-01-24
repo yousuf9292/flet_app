@@ -104,6 +104,28 @@ def delete_task(task_id: str) -> bool:
     return True
 
 
+def fetch_clients():
+    sb = get_supabase()
+    return sb.table("clients").select("*").execute().data or []
+
+
+def add_client(payload: dict):
+    sb = get_supabase()
+    user = get_current_user()
+    payload["owner"] = user["id"]
+    res = sb.table("clients").insert(payload).execute()
+    return res.data[0] if res.data else None
+
+
+def update_client(client_id: str, payload: dict):
+    sb = get_supabase()
+    sb.table("clients").update(payload).eq("id", client_id).execute()
+
+
+def delete_client(client_id: str):
+    sb = get_supabase()
+    sb.table("clients").delete().eq("id", client_id).execute()
+
 # ----------------- BACKWARD COMPAT (optional) -----------------
 
 def set_task_assignee(task_id: str, assignee_id: str | None) -> bool:
