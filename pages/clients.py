@@ -15,7 +15,7 @@ class ClientsPage(ft.Container):
         self.editing_client_id: str | None = None
 
         # ----- form fields -----
-        self.phone = ft.TextField(label="Phone", border_radius=12)
+        self.phone = ft.TextField(label="Phone", border_radius=12,)
         self.email = ft.TextField(label="Email", border_radius=12)
         self.gst = ft.TextField(label="GST", border_radius=12)
         self.ntn = ft.TextField(label="NTN", border_radius=12)
@@ -33,11 +33,12 @@ class ClientsPage(ft.Container):
         self.cancel_btn = ft.OutlinedButton("Cancel edit", on_click=self._cancel_edit, visible=False)
 
         # List
-        self.clients_list = ft.ListView(expand=True, spacing=10, padding=0)
+        self.clients_list = ft.ListView(spacing=10, padding=0)
 
         self.content = ft.Column(
             expand=True,
             spacing=14,
+            scroll=ft.ScrollMode.AUTO,  # ✅ makes whole page scroll
             controls=[
                 self._header(),
                 self._form_card(),
@@ -50,6 +51,43 @@ class ClientsPage(ft.Container):
         self.refresh()
 
     # ---------------- UI ----------------
+
+    def _validate_form(self) -> bool:
+        valid = True
+
+        def req(field: ft.TextField, msg="This field is required"):
+            nonlocal valid
+            if not field.value or not field.value.strip():
+                field.error_text = msg
+                valid = False
+            else:
+                field.error_text = None
+
+        # required fields
+        req(self.phone)
+        req(self.email)
+        req(self.gst)
+        req(self.ntn)
+        req(self.nic)
+        req(self.city)
+        req(self.area)
+        req(self.branch_name)
+        req(self.branch_address)
+        req(self.billing_address)
+
+        # email format check
+        email_val = (self.email.value or "").strip()
+        if email_val:
+            import re
+            if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email_val):
+                self.email.error_text = "Invalid email address"
+                valid = False
+
+
+
+        self.page.update()
+        return valid
+
     def _header(self):
         return ft.Container(
             padding=12,
@@ -72,47 +110,62 @@ class ClientsPage(ft.Container):
             border_radius=16,
             bgcolor=ft.Colors.WHITE,
             border=ft.border.all(1, ft.Colors.GREY_200),
-            content=ft.Column(
-                spacing=10,
+            content=ft.ExpansionPanelList(
+                elevation=0,
+                expanded_header_padding=ft.padding.symmetric(horizontal=10, vertical=6),
                 controls=[
-                    ft.Row(
-                        [
-                            ft.Text("Add Client", weight="bold", size=16, expand=True),
-                            self.cancel_btn,
-                        ]
-                    ),
-                    ft.ResponsiveRow(
-                        [
-                            ft.Column([self.phone], col={"xs": 12, "sm": 6, "md": 3}),
-                            ft.Column([self.email], col={"xs": 12, "sm": 6, "md": 3}),
-                            ft.Column([self.gst], col={"xs": 12, "sm": 6, "md": 3}),
-                            ft.Column([self.ntn], col={"xs": 12, "sm": 6, "md": 3}),
-                        ],
-                        spacing=10,
-                        run_spacing=10,
-                    ),
-                    ft.ResponsiveRow(
-                        [
-                            ft.Column([self.nic], col={"xs": 12, "sm": 4}),
-                            ft.Column([self.city], col={"xs": 12, "sm": 4}),
-                            ft.Column([self.area], col={"xs": 12, "sm": 4}),
-                        ],
-                        spacing=10,
-                        run_spacing=10,
-                    ),
-                    ft.ResponsiveRow(
-                        [
-                            ft.Column([self.branch_name], col={"xs": 12, "md": 4}),
-                            ft.Column([self.branch_address], col={"xs": 12, "md": 4}),
-                            ft.Column([self.billing_address], col={"xs": 12, "md": 4}),
-                        ],
-                        spacing=10,
-                        run_spacing=10,
-                    ),
-                    ft.Row(
-                        [self.save_btn],
-                        alignment=ft.MainAxisAlignment.END,
-                    ),
+                    ft.ExpansionPanel(
+                        header=ft.ListTile(
+                            title=ft.Row(
+                                [
+                                    ft.Text("Add / Edit Client", weight="bold", expand=True),
+                                    self.cancel_btn,  # keep your cancel button here
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            )
+                        ),
+                        content=ft.Container(
+                            padding=10,
+                            content=ft.Column(
+                                spacing=10,
+                                controls=[
+                                    ft.ResponsiveRow(
+                                        [
+                                            ft.Column([self.phone], col={"xs": 12, "sm": 6, "md": 3}),
+                                            ft.Column([self.email], col={"xs": 12, "sm": 6, "md": 3}),
+                                            ft.Column([self.gst], col={"xs": 12, "sm": 6, "md": 3}),
+                                            ft.Column([self.ntn], col={"xs": 12, "sm": 6, "md": 3}),
+                                        ],
+                                        spacing=10,
+                                        run_spacing=10,
+                                    ),
+                                    ft.ResponsiveRow(
+                                        [
+                                            ft.Column([self.nic], col={"xs": 12, "sm": 4}),
+                                            ft.Column([self.city], col={"xs": 12, "sm": 4}),
+                                            ft.Column([self.area], col={"xs": 12, "sm": 4}),
+                                        ],
+                                        spacing=10,
+                                        run_spacing=10,
+                                    ),
+                                    ft.ResponsiveRow(
+                                        [
+                                            ft.Column([self.branch_name], col={"xs": 12, "md": 4}),
+                                            ft.Column([self.branch_address], col={"xs": 12, "md": 4}),
+                                            ft.Column([self.billing_address], col={"xs": 12, "md": 4}),
+                                        ],
+                                        spacing=10,
+                                        run_spacing=10,
+                                    ),
+                                    ft.Row(
+                                        [self.save_btn],
+                                        alignment=ft.MainAxisAlignment.END,
+                                    ),
+                                ],
+                            ),
+                        ),
+                        expanded=False,
+                    )
                 ],
             ),
         )
@@ -151,9 +204,15 @@ class ClientsPage(ft.Container):
             self.branch_name, self.branch_address, self.billing_address
         ]:
             f.value = ""
+            f.error_text = None
 
     # ---------------- Add vs Update ----------------
     def _save_or_update_client(self, e):
+
+        if not self._validate_form():
+            self._toast("⚠️ Please fill all required fields")
+            return
+
         payload = self._payload_from_form()
 
         # EDIT MODE -> update
